@@ -1,0 +1,72 @@
+# Dependabot keeps our dependencies up to date.
+# Once a week it looks for new versions and opens pull requests for them.
+# CI runs on each of those pull requests, so we see whether an update breaks
+# anything before we merge it.
+#
+# Every entry below uses the same rules:
+#   - schedule:   check every Monday.
+#   - open-pull-requests-limit: at most 5 open update PRs per entry at a time.
+#   - commit-message.prefix: makes the commit a Conventional Commit. Dependabot adds
+#                 the colon, so the message reads like "build(deps): bump ...".
+#   - cooldown:   propose a new version only once it is 7 days old. When a
+#                 package is hacked, the bad version is usually found and pulled
+#                 within days, before we would install it. Security fixes are
+#                 not delayed: Dependabot's security updates skip the cooldown.
+#
+# Dependabot labels each pull request "dependencies", plus a label for its
+# ecosystem, such as "python" or "github_actions". It creates those labels itself.
+
+version: 2
+updates:
+  # Python packages, managed by uv (backend/pyproject.toml and backend/uv.lock).
+  - package-ecosystem: "uv"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      # Minor and patch updates rarely break anything, so they arrive together in
+      # one pull request. Major updates can break things, so each one gets its own.
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The actions our workflows use (actions/checkout and so on), found in
+  # .github/workflows/ and in our own composite action. All of them are updated
+  # together in one pull request.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/setup-backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # The base image in backend/Dockerfile (python:3.13-slim).
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(docker)"
+    cooldown:
+      default-days: 7

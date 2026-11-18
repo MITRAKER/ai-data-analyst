@@ -1,0 +1,74 @@
+# CodeQL is GitHub's code scanner. It reads our code the way a security reviewer
+# would and looks for bugs that attackers could use, such as injection or unsafe
+# handling of untrusted input. Findings appear in the repository's Security tab,
+# under "Code scanning".
+name: CodeQL
+
+on:
+  # Scan every change that lands on main.
+  push:
+    branches: [main]
+  # Scan every pull request (to any branch) before it is merged.
+  pull_request:
+  # Scan once a week too, every Monday at 04:27 UTC. CodeQL gets new checks over
+  # time, so code that has not changed can still get new findings.
+  schedule:
+    - cron: "27 4 * * 1"
+  # Adds a "Run workflow" button in the Actions tab, to start a scan by hand.
+  workflow_dispatch:
+
+# Least privilege: by default, jobs in this workflow may only read the code.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the scan that is still going for the old
+# commit. Every other run gets a group of its own, so it is never cancelled.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    # The name shows the language, for example "Analyze (python)".
+    name: "Analyze (${{ matrix.language }})"
+    runs-on: ubuntu-latest
+    # Stop the job if it hangs, instead of using up CI minutes.
+    timeout-minutes: 20
+    # This job needs a little more than read access. A job's permissions replace
+    # the workflow defaults above, so "contents: read" is listed again.
+    permissions:
+      security-events: write # upload the findings to the Security tab
+      actions: read # read details about this workflow run
+      contents: read # check out the code
+    strategy:
+      # If the scan for one language fails, still finish the other one.
+      fail-fast: false
+      matrix:
+        # Run this job once per language:
+        #   python:  the backend code.
+        #   actions: our GitHub Actions workflow files. Workflows can have
+        #            security bugs too, for example script injection.
+        language: [python, actions]
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Set up CodeQL for one language.
+      #   build-mode: none   scan the source files directly. Python and workflow
+      #                      files need no compile step.
+      #   queries: security-extended   the default security checks plus extra ones.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      # Run the scan and upload the findings. The category keeps the Python
+      # results and the workflow results apart in the Security tab.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

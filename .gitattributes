@@ -1,0 +1,13 @@
+# How git stores and checks out files, the same on every operating system.
+
+# Text files use LF line endings in the repository and in your working copy, so
+# diffs never show line-ending noise (Windows editors handle LF fine).
+* text=auto eol=lf
+
+# CSV files keep their bytes exactly as they are. The sample data uses CRLF line
+# endings, as the CSV standard (RFC 4180) and Excel exports do, which also tests
+# that the app reads them correctly.
+*.csv -text
+
+# uv writes this file. GitHub folds generated files in pull request diffs.
+backend/uv.lock linguist-generated=true
