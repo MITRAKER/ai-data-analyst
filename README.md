@@ -26,7 +26,7 @@ Interpret results  ──►  Answer + visualization
 ## Progress
 
 - [x] **Step 1:** FastAPI backend, CSV upload into DuckDB, safe read-only SQL
-- [ ] **Step 2:** Agent loop with SQL, Python and chart tools
+- [x] **Step 2:** Agent loop with SQL, Python and chart tools
 - [ ] **Step 3:** Next.js chat UI with live steps and charts
 - [ ] **Step 4:** Postgres support, evaluation set, demo
 
@@ -47,7 +47,19 @@ curl -X POST localhost:8000/query -H 'content-type: application/json' \
   -d '{"sql": "SELECT region, SUM(revenue) FROM sample_sales GROUP BY 1"}'
 ```
 
-Run the tests with `python -m pytest`.
+### Ask the agent (step 2)
+
+Copy `.env.example` to `.env` and add your `ANTHROPIC_API_KEY`, then:
+
+```bash
+cd backend
+python -m app.cli ../data/sample_sales.csv "Which region's revenue fell the most in Q4, and why?"
+```
+
+You'll see every step: the SQL it writes, the Python it runs, any errors it
+recovers from, and the final answer. Or call `POST /ask` with `{"question": "..."}`.
+
+Run the tests with `python -m pytest` (they use a fake Claude client, so no API key or cost).
 
 ## Tech stack
 

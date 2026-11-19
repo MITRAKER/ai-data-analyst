@@ -6,18 +6,22 @@ Endpoints in step 1:
   GET  /datasets                   -> list uploaded datasets
   GET  /datasets/{name}            -> schema, row count and sample rows
   POST /query                      -> run one read-only SQL query
+  POST /ask                        -> ask the AI agent a question (step 2)
 
-In step 2 the agent will call the same DataStore methods as "tools".
+The agent calls the same DataStore methods as its "tools".
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .agent.orchestrator import DataAnalystAgent
+from .config import load_dotenv
 from .datastore import DatasetError, DataStore
 from .sql_guard import UnsafeSQLError
 
@@ -31,10 +35,20 @@ class QueryRequest(BaseModel):
     max_rows: int = Field(200, ge=1, le=5000)
 
 
-def create_app(store: DataStore | None = None) -> FastAPI:
-    """App factory: tests pass their own in-memory store, production uses the default."""
-    app = FastAPI(title="AI Data Analyst", version="0.1.0")
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=3, max_length=2000)
+    datasets: list[str] | None = Field(None, description="Limit to these datasets (default: all).")
+
+
+def create_app(
+    store: DataStore | None = None,
+    agent_factory: Callable[[DataStore], DataAnalystAgent] | None = None,
+) -> FastAPI:
+    """App factory: tests pass their own in-memory store (and a fake agent),
+    production uses the defaults."""
+    app = FastAPI(title="AI Data Analyst", version="0.2.0")
     app.state.store = store or DataStore(os.getenv("DUCKDB_PATH", ":memory:"))
+    app.state.agent_factory = agent_factory or DataAnalystAgent
 
     app.add_middleware(
         CORSMiddleware,
@@ -77,7 +91,31 @@ def create_app(store: DataStore | None = None) -> FastAPI:
         except UnsafeSQLError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/ask")
+    def ask(req: AskRequest) -> dict:
+        """Run the agent to completion and return every step plus the final answer.
+        (Step 3 adds a streaming version so the UI can show steps live.)"""
+        store = app.state.store
+        if req.datasets:
+            unknown = set(req.datasets) - set(store.list_tables())
+            if unknown:
+                raise HTTPException(404, f"Unknown dataset(s): {sorted(unknown)}")
+        try:
+            agent = app.state.agent_factory(store)
+        except Exception as exc:  # e.g. no API key configured
+            raise HTTPException(503, f"Agent unavailable: {exc}") from exc
+
+        events = list(agent.run(req.question, req.datasets))
+        final = events[-1] if events else {"type": "error", "message": "No response."}
+        return {
+            "ok": final["type"] == "answer",
+            "answer": final.get("text") or final.get("message"),
+            "charts": final.get("charts", []),
+            "steps": [e for e in events if e["type"] != "answer"],
+        }
+
     return app
 
 
+load_dotenv()
 app = create_app()

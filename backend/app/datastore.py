@@ -133,7 +133,8 @@ class DataStore:
 
     # ---------- querying ----------
 
-    def run_query(self, sql: str, max_rows: int = 200) -> QueryResult:
+    def query_df(self, sql: str, max_rows: int = 200) -> tuple[pd.DataFrame, bool]:
+        """Run read-only SQL and return (DataFrame, truncated)."""
         sql = ensure_read_only(sql)
         # Ask for one extra row so we can tell the caller the result was cut off.
         wrapped = f"SELECT * FROM ({sql}) AS _q LIMIT {int(max_rows) + 1}"
@@ -144,7 +145,10 @@ class DataStore:
                 # Return the database's own message: the agent will read it and fix its SQL.
                 raise UnsafeSQLError(f"SQL error: {exc}") from exc
         truncated = len(df) > max_rows
-        df = df.head(max_rows)
+        return df.head(max_rows), truncated
+
+    def run_query(self, sql: str, max_rows: int = 200) -> QueryResult:
+        df, truncated = self.query_df(sql, max_rows)
         return QueryResult(
             columns=[str(c) for c in df.columns],
             rows=_json_safe(df),

@@ -129,5 +129,176 @@ what our agent will learn to do on its own.
 
 ---
 
-*Next: Lesson 2, the agent loop. How Claude decides which tool to call, how tool
-results flow back into the conversation, and how to run AI-written Python safely.*
+## Lesson 2: The agent loop (Claude + tool calling)
+
+### What we built
+
+| File | Job |
+|---|---|
+| `backend/app/agent/orchestrator.py` | **The agent loop**: talks to Claude, runs tools, repeats until there's an answer |
+| `backend/app/agent/tools.py` | The 3 tools: `query_database`, `run_python`, `make_chart` |
+| `backend/app/agent/sandbox.py` | Runs AI-written Python safely |
+| `backend/app/cli.py` | Ask questions from the terminal and watch every step |
+| `POST /ask` in `main.py` | The same agent behind the API |
+| `backend/tests/test_agent.py` | 22 new tests that use a **fake** Claude |
+
+### The big idea: an agent is just a loop
+
+People talk about "agents" as if they're magic. Here's the whole thing:
+
+```
+messages = [user's question]
+loop (at most 12 times):
+    reply = Claude(system prompt + schema, tool definitions, messages)
+    if reply.stop_reason == "tool_use":       # Claude wants to use tools
+        for each tool call in reply:
+            result = OUR CODE runs the tool
+        messages += [reply, all the results]  # Claude sees what happened
+    else:                                      # "end_turn"
+        return reply.text                      # the final answer
+```
+
+Open `orchestrator.py` and find `def run`. It's about 80 lines, and that's the
+entire agent from the diagram in the screenshot:
+
+| Diagram box | Code |
+|---|---|
+| Agent orchestrator, "plans analysis steps" | Claude, guided by `SYSTEM_PROMPT` |
+| Query database / Run code / Generate chart | `TOOL_DEFINITIONS` + `ToolExecutor` |
+| "may re-analyze" | the loop: errors go back to Claude, and it tries again |
+| Interpret results, Answer + visualization | Claude's final message + the `charts` list |
+
+### How tool calling actually works
+
+1. **We describe tools to Claude** with a name, a description and a JSON Schema
+   (see `TOOL_DEFINITIONS`). Claude never runs anything itself.
+2. **Claude replies with a request**, a `tool_use` block like
+   `{"name": "query_database", "input": {"sql": "SELECT ...", "purpose": "..."}}`,
+   and `stop_reason == "tool_use"`.
+3. **We run it** and send back a `tool_result` block with the same `tool_use_id`,
+   so Claude knows which result belongs to which request.
+4. **Claude reads the result** and decides what to do next: another query, a chart,
+   or the final answer.
+
+Two rules from the API that are easy to get wrong (both are tested):
+- Send Claude's whole reply back unchanged (`response.content`), including its
+  thinking blocks. Don't send just the text.
+- If Claude asks for several tools at once, return **all** the results in **one**
+  user message.
+
+### Design decisions, and why
+
+**Tool descriptions are prompts.** Look at how much `query_database`'s
+description says: *one* SELECT, prefer aggregating, and what to do on error.
+Claude chooses tools based on these words, so vague descriptions lead to bad tool
+use. `strict: true` makes Claude's inputs always match the schema exactly.
+
+**Every tool has a `purpose` field.** It costs nothing, and it gives the user a
+plain-English line for each step ("Revenue by region"). It also makes Claude
+state its intent before acting, which tends to improve its choices.
+
+**Errors are information, not crashes.** A typo in SQL returns the database's
+error with `is_error: true`. Claude reads *column "revenu" not found* and fixes
+it. That's the "may re-analyze" arrow. Only truly unexpected errors stop the loop.
+
+**The schema goes in the system prompt.** `build_schema_context()` uses the same
+`describe()` from Lesson 1, so Claude knows the column names before it writes
+any SQL. Otherwise its first step would always be guessing.
+
+**Code gets data through SQL, not files.** `run_python` takes a `sql` query and a
+`code` string. We run the SQL through the same safety guard, hand the result to
+the code as `df`, and return only what the code prints. The AI never touches files.
+
+**Charts are data, not images.** `make_chart` returns a Plotly JSON spec
+(`{data, layout}`) that the browser will draw in step 3. It's interactive, small,
+and needs no extra Python package.
+
+**Caps everywhere:** 12 steps per question, 100 rows shown to Claude, 15 seconds
+per code run. An agent without limits can loop forever and run up a bill.
+
+### Running AI-written code safely (`sandbox.py`)
+
+Same idea as Lesson 1, defense in depth:
+1. **Inspect before running.** `check_code()` parses the code into a syntax tree
+   (`ast`) and blocks `import os`, `open(...)`, `eval`, `__import__`, dunder
+   tricks like `().__class__`, and pandas file methods like `to_csv`.
+2. **Separate process.** It runs in a new `python -I` process, so a crash can't
+   take down the server.
+3. **Limits.** A 15-second timeout, a 10-second CPU cap and a 1 GB memory cap.
+4. **No secrets.** The child process gets an empty folder and almost no
+   environment variables, so your API key isn't visible to it.
+
+Be honest about the limits in interviews: this is good for a portfolio project.
+For a real product, you'd add a container with no network access (Docker or
+gVisor), or use a hosted code-execution service.
+
+### Claude API settings we chose (`_call_claude`)
+
+| Setting | Why |
+|---|---|
+| `model="claude-opus-5-5"` | The current default Claude model. Change it with `ANTHROPIC_MODEL` |
+| `thinking={"type": "adaptive", "display": "summarized"}` | Claude decides how much to reason, and we get a readable summary to show the user |
+| `output_config={"effort": "medium"}` | Balances quality and cost. Try `high` for harder questions (`AGENT_EFFORT`) |
+| `cache_control={"type": "ephemeral"}` | Every loop step re-sends the same system prompt and history. Caching makes those repeats much cheaper |
+| `fallbacks="default"` | If the model declines a request, the API retries on a fallback model |
+
+We also handle every way the loop can end: `end_turn` (answer), `tool_use`
+(keep going), `max_tokens` (answer cut off), `refusal`, `pause_turn`, and API
+errors like a bad key or rate limits.
+
+**Why write the loop ourselves?** Anthropic's SDK has a "tool runner" that does
+the loop for you, and there's also **Claude Managed Agents**, where Anthropic
+hosts the whole loop and a code sandbox. Both are great for production. We wrote
+the loop by hand because (a) understanding it is the point of this project, and
+(b) we want to `yield` every step to stream it to the UI in step 3. In an
+interview, being able to explain this loop line by line is the skill.
+
+### Testing an AI app without paying for AI
+
+`test_agent.py` uses a `FakeClient` that returns **scripted** Claude replies.
+That tests *our* code (tools run, results go back in the right shape, errors are
+recoverable, the loop stops) for free, in milliseconds, with the same result
+every run. Testing the *quality* of Claude's answers is different. That's the
+evaluation set in step 4.
+
+### Try it
+
+```bash
+cp .env.example .env            # then paste your key after ANTHROPIC_API_KEY=
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest -q             # 38 passed, no key needed
+python -m app.cli ../data/sample_sales.csv "Which region's revenue fell the most in Q4, and why?"
+```
+
+Watch the steps. Does it find the South region's Q4 drop? Does it dig into *why*
+(which products or channels)?
+
+### Exercises
+
+1. **Add a tool.** Write `describe_column` that returns min, max, mean, the number
+   of distinct values and the top 5 values for one column. Add the definition and
+   the handler, then a test with `FakeClient`. Does Claude use it?
+2. **Break it on purpose.** Ask *"Delete all the South orders"*. What does Claude
+   do? Which layer would stop it if it tried?
+3. **Prompt engineering.** Remove the "Check your numbers" line from
+   `SYSTEM_PROMPT`, ask the same question 3 times, then put it back. Do you see a
+   difference? (This is why we build an evaluation set in step 4.)
+4. **Cost awareness.** Print `response.usage` in `_call_claude`. How many tokens
+   does one question use? How much is read from the cache on later steps
+   (`cache_read_input_tokens`)?
+
+### Words to know
+
+- **Tool use / function calling:** the model asks *your code* to run a function and reads the result.
+- **Agent loop:** call model, run tools, repeat until the model answers.
+- **`stop_reason`:** why the model stopped (`tool_use`, `end_turn`, `max_tokens`, `refusal`).
+- **System prompt:** standing instructions and context, separate from the user's question.
+- **AST (abstract syntax tree):** code parsed into a structure you can inspect safely.
+- **Prompt caching:** reusing an already-processed prompt prefix so it costs less.
+- **Test double / fake:** a stand-in object (our `FakeClient`) that makes tests fast and predictable.
+
+---
+
+*Next: Lesson 3, the chat UI. Streaming agent steps to the browser live with
+Server-Sent Events, and drawing the charts with Plotly.*
