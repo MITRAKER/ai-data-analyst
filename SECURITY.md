@@ -100,23 +100,39 @@ protects you.
 
 4. **Checked before it runs.** The app parses the code into a syntax tree (AST)
    and inspects it before anything runs. Imports must be on an allow-list, such as
-   `pandas`, `numpy` and `math`. Dangerous built-ins, such as `open`, `eval`,
-   `exec` and `__import__`, are banned. So are file and network methods, such as
-   `read_csv` and `to_csv`.
-5. **Run in a separate, limited process.** The code runs in a new process of the
-   same Python interpreter, never inside the server itself. That process has a
-   time limit and limits on CPU time, memory and the size of the files it can
-   write. It starts in an empty working directory, and its environment holds no
-   secrets, so it cannot read your API key. Only the code's printed output and
-   error messages come back.
+   `pandas`, `numpy` and `math`, and a name imported from one of them must not be
+   private (`from random import _os` is refused). Dangerous built-ins, such as
+   `open`, `eval`, `exec` and `__import__`, are banned. So are file and network
+   methods, such as `read_csv` and `to_csv`, and the doors to Python's internals,
+   such as frames and the `builtins` module.
+5. **Run in a separate, locked-down process.** The code runs in a new process of
+   the same Python interpreter, never inside the server itself. It starts in an
+   empty working directory, and its environment holds no secrets. Just before the
+   code starts, that process limits itself: CPU time, memory, no writing to files,
+   no new file descriptors at all (so it cannot open a file or a network
+   connection, even after closing one it already has), and no new processes or
+   threads. A wall-clock time limit stops it from the outside.
+6. **Watched while it runs.** An audit hook
+   ([PEP 578](https://peps.python.org/pep-0578/)) in that process refuses opening
+   files, starting programs, sending signals, sockets, `ctypes`, changing the
+   limits, and importing modules that could get around them. Only the code's
+   printed output and error messages come back.
+
+A check of the syntax tree can never be complete, because Python is a very
+flexible language. So layers 5 and 6 do not rely on it: the tests run code that
+the check would refuse, for example code that closes a file descriptor to open a
+file, or that tries to send a signal to the server, and check that it still
+fails.
 
 ### What these layers do not do
 
-These layers reduce the risk. They are not a perfect sandbox. Python is a very
-flexible language, and a check of the syntax tree can miss a clever trick. All
-the limits are set by the app itself, inside your normal operating system. Code
-that got past them would run as the same operating-system user as the server, on
-the same machine. There is no container or virtual machine around it.
+These layers reduce the risk. They are not a perfect sandbox. All the limits are
+set by the app itself, inside your normal operating system: there is no
+container or virtual machine around the code. Code that found a way past all of
+them, for example through a bug in Python itself, would run as the same
+operating-system user as the server, on the same machine. The root user is
+exempt from the limit on new processes, so do not run the app as root. The
+Docker image runs it as an ordinary user.
 
 That is a reasonable trade-off when you run the app on your own computer, with
 your own data and your own API key. A multi-user deployment should add
@@ -189,7 +205,10 @@ privately, as described in [Reporting a vulnerability](#reporting-a-vulnerabilit
   in CI.
 - **Least privilege in CI.** Every workflow gives its token only the permissions
   it needs, mostly read-only. The workflows use only GitHub's own actions;
-  everything else is plain shell commands.
+  everything else is plain shell commands. To build the image for ARM computers,
+  the release job also runs Docker's own build tools from container images:
+  BuildKit, and the QEMU installer `tonistiigi/binfmt`, which needs full rights
+  on the runner and is therefore pinned to one exact build by its digest.
 - **detect-secrets** and **detect-private-key** scan for secrets, as described
   above.
 - **Release images** come with a provenance record (how and from what the image

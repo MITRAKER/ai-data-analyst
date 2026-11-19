@@ -4,12 +4,15 @@
 #   git push origin v0.2.0
 #
 # The workflow:
-#   1. checks that the tag matches __version__ in backend/app/__init__.py and
-#      that CHANGELOG.md has a section for that version,
+#   1. checks that the tag is a version it can release, that it matches
+#      __version__ in backend/app/__init__.py, and that CHANGELOG.md has a
+#      section for that version,
 #   2. runs all of CI again on the tagged commit,
-#   3. creates a GitHub Release, with that CHANGELOG section as its notes, and
-#   4. builds the Docker image for Intel/AMD and ARM computers and pushes it to
-#      the GitHub Container Registry, as ghcr.io/<owner>/<repository>.
+#   3. builds the Docker image for Intel/AMD and ARM computers and pushes it to
+#      the GitHub Container Registry, as ghcr.io/<owner>/<repository>, and
+#   4. only then creates the GitHub Release, with that CHANGELOG section as its
+#      notes. So if the image fails, nothing has been announced yet, and
+#      "Re-run failed jobs" finishes the release.
 name: Release
 
 on:
@@ -49,6 +52,16 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#v}"
+          # Only the standard ("canonical") PEP 440 spelling: MAJOR.MINOR.PATCH,
+          # then optionally aN, bN or rcN (a pre-release), .postN and .devN. Other
+          # spellings that Python also accepts, such as 1.0.0-rc.1 or 1.0.0RC1,
+          # would hide that a version is a pre-release, so they are refused.
+          number='(0|[1-9][0-9]*)'
+          canonical="^$number\\.$number\\.$number((a|b|rc)$number)?(\\.post$number)?(\\.dev$number)?\$"
+          if [[ ! "$version" =~ $canonical ]]; then
+            echo "::error::$TAG is not a version this workflow can release. Use for example v1.2.0, v1.2.0rc1 or v1.2.0.post1."
+            exit 1
+          fi
           in_code="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' backend/app/__init__.py)"
           if [ "$version" != "$in_code" ]; then
             echo "::error::The tag is $TAG, but backend/app/__init__.py says __version__ = \"$in_code\"."
@@ -56,8 +69,8 @@ jobs:
           fi
           # Fails when CHANGELOG.md has no notes for this version.
           scripts/release-notes.sh "$version" > /dev/null
-          # PEP 440 pre-releases end in aN, bN, rcN or .devN, as in 1.0.0rc1.
-          if [[ "$version" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+          # A pre-release has aN, bN, rcN or .devN in it, as in 1.0.0rc1 or 1.0.0rc1.post1.
+          if [[ "$version" =~ (a|b|rc)[0-9]+|\.dev[0-9]+ ]]; then
             prerelease=true
           else
             prerelease=false
@@ -72,7 +85,8 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: [check, ci]
+    # After the image, so a release is only announced once its image exists.
+    needs: [check, ci, image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -116,12 +130,16 @@ jobs:
           persist-credentials: false
       # The runner is an Intel/AMD (x86-64) machine. QEMU emulates an ARM CPU,
       # so the same machine can also build the image for ARM computers, such
-      # as Macs with Apple silicon. tonistiigi/binfmt is Docker's own installer
-      # for it.
+      # as Macs with Apple silicon. tonistiigi/binfmt is the installer that
+      # Docker's documentation uses. It runs with full rights on the runner, so
+      # it is pinned to one exact build by its digest (sha256:...), which cannot
+      # change. Dependabot cannot see this line: to update it, take the newest
+      # "qemu-v..." tag from hub.docker.com/r/tonistiigi/binfmt/tags and its digest.
       - name: Set up QEMU to build for ARM
-        run: docker run --rm --privileged tonistiigi/binfmt:latest --install arm64
+        run: docker run --rm --privileged tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm64
       # The default builder can only build for the machine it runs on. A
-      # "docker-container" builder can build for several platforms at once.
+      # "docker-container" builder can build for several platforms at once. It
+      # runs BuildKit, Docker's own build engine, from the moby/buildkit image.
       - name: Set up a builder for several platforms
         run: docker buildx create --name multi-platform --driver docker-container --use
       # The job's own short-lived token logs in. --password-stdin keeps the
@@ -134,10 +152,14 @@ jobs:
       # Registry names must be lowercase; ${GITHUB_REPOSITORY,,} lowercases it.
       #   --provenance mode=max  attach a record of how the image was built (its "provenance")
       #   --sbom true            attach the list of every package inside the image
+      #   --annotation index:... describe the image on ghcr.io. An image for several
+      #                          platforms is an "index" of images, and the registry
+      #                          reads its description from the index, not from labels.
       - name: Build and push the image
         env:
           VERSION: ${{ needs.check.outputs.version }}
           PRERELEASE: ${{ needs.check.outputs.prerelease }}
+          DESCRIPTION: "AI Data Analyst backend: upload a CSV, ask questions in plain English, and an AI agent answers using SQL, Python and charts."
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           tags=(--tag "$image:$VERSION")
@@ -149,6 +171,10 @@ jobs:
             "${tags[@]}" \
             --label "org.opencontainers.image.version=$VERSION" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.description=$DESCRIPTION" \
+            --annotation "index:org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            --annotation "index:org.opencontainers.image.version=$VERSION" \
             --provenance mode=max \
             --sbom true \
             --push

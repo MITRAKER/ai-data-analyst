@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 from pathlib import Path
 
@@ -279,6 +280,19 @@ def test_unknown_chart_type() -> None:
         "print(__builtins__)",
         "def f(:\n  pass",
         "x = 1\n" * 10_001,
+        # Names imported from allowed modules follow the attribute rules.
+        "from random import _os",
+        "from collections import _sys",
+        "from pandas import read_csv",
+        "from numpy import load",
+        "from pandas import *",
+        # So do the parts of a dotted import.
+        "import numpy.lib as lib",
+        "from numpy.lib import npyio",
+        "import pandas._libs",
+        # Doors to the interpreter: built-ins through modules, and frames.
+        "import re\nre.enum.bltns.exec('1')",
+        "g = (x for x in [])\nprint(g.gi_frame.f_builtins)",
     ],
 )
 def test_sandbox_blocks(code: str) -> None:
@@ -294,6 +308,10 @@ def test_sandbox_blocks(code: str) -> None:
         "import numpy.linalg",
         "print(df.groupby('a')['b'].agg(['sum', 'mean']))",
         "x = [i * 2 for i in range(10)]",
+        "from collections import Counter, defaultdict",
+        "from datetime import datetime, timedelta",
+        "import numpy.linalg as la",
+        "import re\nprint(re.compile(r'[0-9]+').findall('a1b22'))",
     ],
 )
 def test_sandbox_allows_ordinary_analysis(code: str) -> None:
@@ -370,6 +388,90 @@ def test_sandbox_cannot_write_or_open_files(tmp_path: Path) -> None:
     assert result.error is not None
     assert "no file or network access" in result.error
     assert target.read_text(encoding="utf-8") == "keep me"
+
+
+# ---------- sandbox: the layers behind the static check ----------
+# Python is too flexible for the static check to catch everything, so these
+# tests run code that it would reject and check that the child process still
+# cannot reach outside itself.
+
+
+def test_sandbox_still_works_for_analysis() -> None:
+    df = pd.DataFrame({"region": ["N", "S"] * 50, "revenue": range(100)})
+    code = (
+        "print(df.groupby('region')['revenue'].sum().to_dict())\n"
+        "print(next(df.itertuples()).region)\n"
+        "print(np.linalg.inv(np.eye(50)).trace())"
+    )
+    result = run_python(code, df)
+    assert result.ok, result.error
+    assert result.stdout == "{'N': 2450, 'S': 2500}\nN\n50.0\n"
+
+
+def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    _ = secret.write_text("FAKE-SECRET-FOR-THE-TEST", encoding="utf-8")
+    # Closing stdin frees descriptor 0, which used to let the next open() succeed.
+    code = f"import os\nos.close(0)\nprint(os.read(os.open({str(secret)!r}, 0), 100))"
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert "FAKE-SECRET" not in result.stdout
+    assert result.error is not None
+    assert "Not allowed in the sandbox: open" in result.error
+    assert "no file or network access" in result.error
+
+
+@pytest.mark.parametrize(
+    ("code", "action"),
+    [
+        ("import os\nos.kill(os.getppid(), 0)", "os.kill"),
+        ("import os\nos.fork()", "os.fork"),
+        ("import os\nos.system('true')", "os.system"),
+        ("import _interpreters", "import"),
+        ("import ctypes\nctypes.CDLL(None)", "ctypes.dlopen"),
+        ("import socket", "import"),
+        (
+            "import resource\nresource.setrlimit(resource.RLIMIT_CPU, (100, 100))",
+            "resource.setrlimit",
+        ),
+        (
+            (
+                "import sys\n"
+                "def nothing(event, args): pass\n"
+                "sys._getframe(1).f_globals['audit'].__code__ = nothing.__code__"
+            ),
+            "object.__setattr__",
+        ),
+    ],
+)
+def test_sandbox_blocks_actions_that_leave_the_process(code: str, action: str) -> None:
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.error is not None
+    assert f"Not allowed in the sandbox: {action}" in result.error
+
+
+def test_sandbox_hook_cannot_be_switched_off_by_changing_variables(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    _ = secret.write_text("FAKE-SECRET-FOR-THE-TEST", encoding="utf-8")
+    # The hook reads no variables, so breaking the name it raises only changes the error.
+    code = (
+        "import sys\n"
+        "sys._getframe(1).f_globals['PermissionError'] = None\n"
+        f"print(open({str(secret)!r}).read())"
+    )
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert "FAKE-SECRET" not in result.stdout
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="the root user is exempt from the process limit")
+def test_sandbox_cannot_start_threads_or_processes() -> None:
+    code = "import threading\nthreading.Thread(target=print).start()"
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.error is not None
+    assert "can't start new thread" in result.error
 
 
 def test_sandbox_error_without_traceback() -> None:

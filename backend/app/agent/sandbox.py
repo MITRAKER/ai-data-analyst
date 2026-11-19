@@ -5,17 +5,25 @@ several independent layers ("defense in depth"). Each layer still protects us
 if another one has a gap.
 
 1. Static check, before anything runs: we parse the code into a syntax tree
-   (AST) and reject imports outside an allow-list, dangerous built-ins such as
-   `open`, `exec` and `__import__`, private attributes, file and network
-   methods such as `to_csv` and `read_pickle`, and strings that contain "__".
+   (AST) and reject imports outside an allow-list, private names imported from
+   allowed modules, dangerous built-ins such as `open`, `exec` and
+   `__import__`, private attributes, file and network methods such as `to_csv`
+   and `read_pickle`, doors to the interpreter's internals such as frames, and
+   strings that contain "__". Python is too flexible for a list like this to
+   be complete, so the next layers do not trust it.
 2. A separate process: a fresh `python -I -B` process in an empty temporary
    folder, with no input and a minimal environment (no API keys). A crash or
    an endless loop can't take down the web server.
 3. Operating-system limits inside that process, set just before the AI's code
    starts: CPU time, memory, a file size of zero (nothing can be written to a
-   file) and no new file descriptors (no file can be opened and no network
-   connection made).
-4. Limits in this process: we read at most `output_bytes` of output, and a
+   file), no new file descriptors at all (no file can be opened and no network
+   connection made, even if the code closes one it already has), and no new
+   processes or threads.
+4. An audit hook in that process (PEP 578): Python calls it before every
+   sensitive action, and it refuses opening files, starting processes,
+   sending signals, sockets, ctypes, changing the limits, and importing
+   modules that could get around them.
+5. Limits in this process: we read at most `output_bytes` of output, and a
    watchdog kills the child process when the wall-clock time limit passes.
 
 This is a good sandbox for a portfolio project. A multi-user product should
@@ -153,7 +161,42 @@ _ESCAPES: Final = (
     "testing",
     "util",
 )
-BLOCKED_ATTRS: Final = frozenset(_FILE_READERS + _FILE_WRITERS + _ESCAPES)
+# Doors to the interpreter itself: frames, the built-ins behind them, and the
+# modules that can run or load any code. `re.enum.bltns.exec`, for example,
+# is the built-in exec() reached through modules that `re` imports.
+_INTERNALS: Final = (
+    "ag_frame",
+    "bltns",
+    "breakpoint",
+    "builtins",
+    "cr_frame",
+    "ctypes",
+    "delattr",
+    "exec",
+    "f_back",
+    "f_builtins",
+    "f_code",
+    "f_globals",
+    "f_locals",
+    "getattr",
+    "gi_code",
+    "gi_frame",
+    "globals",
+    "import_module",
+    "importlib",
+    "inspect",
+    "locals",
+    "marshal",
+    "pickle",
+    "posix",
+    "setattr",
+    "socket",
+    "subprocess",
+    "tb_frame",
+    "tb_next",
+    "vars",
+)
+BLOCKED_ATTRS: Final = frozenset(_FILE_READERS + _FILE_WRITERS + _ESCAPES + _INTERNALS)
 
 _SITE_PACKAGES: Final = re.compile(r'File "[^"]*?site-packages/')
 
@@ -168,7 +211,7 @@ ERROR_TAIL_LINES: Final = 8
 _RUNNER: Final = """\
 import collections, datetime, decimal, fractions, functools, itertools, json, math
 import random, re, statistics
-import linecache, os, resource, signal, sys
+import linecache, resource, signal, sys
 
 import numpy as np
 import numpy.fft, numpy.linalg, numpy.polynomial, numpy.random
@@ -185,6 +228,31 @@ def limit(kind, soft, hard):
     resource.setrlimit(kind, (soft, hard))
 
 
+def audit(event, args):
+    # Python calls this before each sensitive action, and raising stops the
+    # action. It reads only constants, so code that changes this script's
+    # variables cannot switch it off.
+    if event == "import":  # only for modules that are not loaded yet
+        name = args[0].partition(".")[0]
+        blocked = name.startswith(("_test", "_xx")) or name in {
+            "_ctypes", "_interpchannels", "_interpqueues", "_interpreters",
+            "_multiprocessing", "_posixshmem", "_posixsubprocess", "_socket", "_sqlite3",
+            "_ssl", "concurrent", "ctypes", "faulthandler", "fcntl", "mmap",
+            "multiprocessing", "pty", "resource", "socket", "sqlite3", "ssl", "subprocess",
+            "syslog", "termios",
+        }
+    elif event == "object.__setattr__":
+        blocked = args[1] == "__code__"  # replacing a function's code, this one's too
+    else:
+        blocked = event.startswith((
+            "code.__new__", "ctypes.", "gc.", "glob.", "marshal.", "open", "os.", "pickle.",
+            "resource.", "shutil.", "signal.", "socket.", "sqlite3.", "subprocess.",
+            "syslog.", "tempfile.",
+        ))
+    if blocked:
+        raise PermissionError(f"Not allowed in the sandbox: {event}")
+
+
 with open("user_code.py", encoding="utf-8") as source_file:
     source = source_file.read()
 df = pd.read_pickle("data.pkl")
@@ -193,13 +261,13 @@ linecache.cache["user_code.py"] = (len(source), None, source.splitlines(True), "
 code = compile(source, "user_code.py", "exec")
 
 signal.signal(signal.SIGXFSZ, signal.SIG_IGN)  # a file write fails with an error instead
-probe = os.open(os.devnull, os.O_RDONLY)  # the lowest free file descriptor number
-os.close(probe)
 limit(resource.RLIMIT_CPU, CPU_SECONDS, CPU_SECONDS + 1)
 if sys.platform != "darwin":  # macOS does not support memory limits this way
     limit(resource.RLIMIT_AS, MEMORY_BYTES, MEMORY_BYTES)
-limit(resource.RLIMIT_FSIZE, 0, 0)
-limit(resource.RLIMIT_NOFILE, probe, probe)
+limit(resource.RLIMIT_FSIZE, 0, 0)  # nothing can be written to a file
+limit(resource.RLIMIT_NOFILE, 0, 0)  # no new file descriptor, even after closing one
+limit(resource.RLIMIT_NPROC, 0, 0)  # no new process or thread (root is exempt)
+sys.addaudithook(audit)
 exec(code, {"__name__": "__main__", "df": df, "pd": pd, "np": np})
 """
 
@@ -286,8 +354,8 @@ def _problem(node: ast.AST) -> str | None:
     match node:
         case ast.Import(names=names):
             return _import_problem([alias.name for alias in names])
-        case ast.ImportFrom(module=module, level=level):
-            return "Relative imports are not allowed." if level else _import_problem([module or ""])
+        case ast.ImportFrom(module=module, names=names, level=level):
+            return _from_import_problem(module, names, level)
         case ast.Name(id=name) if name in BLOCKED_NAMES or name.startswith("__"):
             return f"'{name}' is not allowed in the sandbox."
         case ast.Attribute(attr=attr) if attr.startswith("_") or attr in BLOCKED_ATTRS:
@@ -299,11 +367,40 @@ def _problem(node: ast.AST) -> str | None:
 
 
 def _import_problem(modules: list[str]) -> str | None:
-    """Describe the first import outside the allow-list, if any."""
+    """Describe the first import outside the allow-list, if any.
+
+    The parts after the first dot must pass the attribute rules too, because
+    `import numpy.lib as lib` reaches the same module as `numpy.lib`.
+    """
     for name in modules:
-        if name.split(".")[0] not in ALLOWED_IMPORTS:
+        root, *parts = name.split(".")
+        if root not in ALLOWED_IMPORTS:
             allowed = ", ".join(sorted(ALLOWED_IMPORTS))
             return f"Import of '{name}' is not allowed. Allowed: {allowed}."
+        if any(part.startswith("_") or part in BLOCKED_ATTRS for part in parts):
+            return f"Import of '{name}' is not allowed in the sandbox."
+    return None
+
+
+def _from_import_problem(module: str | None, names: list[ast.alias], level: int) -> str | None:
+    """Describe why a `from ... import ...` statement is not allowed, if it isn't.
+
+    `from random import _os` would hand the code the `os` module that `random`
+    uses inside, and `from pandas import read_csv` a file reader, so imported
+    names follow the same rules as attributes.
+    """
+    require(level >= 0, f"an import level is never negative, got {level}")
+    if level:
+        return "Relative imports are not allowed."
+    problem = _import_problem([module or ""])
+    if problem is not None:
+        return problem
+    for alias in names:
+        name = alias.name
+        if name == "*":
+            return "'from ... import *' is not allowed in the sandbox: name what you need."
+        if name.startswith("_") or name in BLOCKED_NAMES or name in BLOCKED_ATTRS:
+            return f"Importing '{name}' is not allowed in the sandbox (no files, no private parts)."
     return None
 
 
@@ -319,6 +416,15 @@ def run_python(
     if sys.platform == "win32":
         raise SandboxError("The Python sandbox needs Linux or macOS. On Windows use WSL or Docker.")
     check_code(code)
+    return _run_unchecked(code, df, limits)
+
+
+def _run_unchecked(code: str, df: pd.DataFrame, limits: SandboxLimits) -> SandboxResult:
+    """Layers 2 to 5: run the code in a locked-down child process.
+
+    The tests call this directly with code that the static check would reject,
+    to prove that the layers behind it hold on their own.
+    """
     with tempfile.TemporaryDirectory(prefix="sandbox_") as tmp:
         folder = Path(tmp)
         df.to_pickle(folder / "data.pkl")
@@ -422,7 +528,10 @@ def _signal_message(returncode: int, limits: SandboxLimits) -> str:
 
 def _explain(error: str) -> str:
     """Add a hint to errors caused by the sandbox's own limits."""
-    if "Too many open files" in error or "File too large" in error:
+    if any(
+        sign in error
+        for sign in ("Not allowed in the sandbox", "Too many open files", "File too large")
+    ):
         return f"{error}\nThe sandbox has no file or network access. Work with `df` in memory."
     if "MemoryError" in error:
         return f"{error}\nThe sandbox ran out of memory. Use fewer rows or aggregate in SQL first."

@@ -397,19 +397,25 @@ git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 
 The release workflow (`.github/workflows/release.yml`) then:
 
-- checks that the tag matches `__version__`, and that `CHANGELOG.md` has notes
-  for the version;
+- checks that the tag is a version it can release (see below), that it matches
+  `__version__`, and that `CHANGELOG.md` has notes for the version;
 - runs the full CI again, on the tagged commit;
-- creates the GitHub Release, using that `CHANGELOG.md` section as the release
-  notes;
 - builds the Docker image for `linux/amd64` and `linux/arm64`, with provenance
   and an SBOM attached, and publishes it as
-  `ghcr.io/mitraker/ai-data-analyst:X.Y.Z` and `:latest`.
+  `ghcr.io/mitraker/ai-data-analyst:X.Y.Z` and `:latest`;
+- only then creates the GitHub Release, using that `CHANGELOG.md` section as the
+  release notes. If the image fails, nothing has been announced yet: fix the
+  problem, then use **Re-run failed jobs** on the workflow run.
 
-**Pre-releases** use a [PEP 440](https://peps.python.org/pep-0440/) version,
-such as `0.3.0rc1` (tag `v0.3.0rc1`), `0.3.0a1` or `0.3.0b1`. The workflow marks
-the GitHub Release as a pre-release and does not move the image's `:latest`
-tag.
+**Version numbers** use the standard spelling of
+[PEP 440](https://peps.python.org/pep-0440/): `X.Y.Z`, optionally followed by
+`aN`, `bN` or `rcN` (a pre-release), `.postN` and `.devN`. The workflow refuses
+other spellings, such as the SemVer style `v0.3.0-rc.1` or `v0.3.0RC1`, because
+they would hide that the version is a pre-release.
+
+**Pre-releases** have `aN`, `bN`, `rcN` or `.devN` in their version, such as
+`0.3.0rc1` (tag `v0.3.0rc1`), `0.3.0a1` or `0.3.0b1`. The workflow marks the
+GitHub Release as a pre-release and does not move the image's `:latest` tag.
 
 **The first release:** GitHub may create the image's package as private. To let
 anyone pull the image, open the package from your GitHub profile (**Packages**),

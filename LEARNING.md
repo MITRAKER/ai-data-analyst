@@ -234,12 +234,24 @@ loop forever and run up a bill.
 Same idea as Lesson 1, defense in depth:
 1. **Inspect before running.** `check_code()` parses the code into a syntax tree
    (`ast`) and blocks `import os`, `open(...)`, `eval`, `__import__`, dunder
-   tricks like `().__class__`, and pandas file methods like `to_csv`.
+   tricks like `().__class__`, private names like `from random import _os`, and
+   pandas file methods like `to_csv`.
 2. **Separate process.** It runs in a new `python -I` process, so a crash can't
    take down the server.
 3. **Limits.** A 15-second timeout, a 10-second CPU cap and a 1 GB memory cap.
-4. **No secrets.** The child process gets an empty folder and almost no
+   The process also can't write to files, open any new file descriptor (a file
+   or a network connection), or start processes or threads.
+4. **An audit hook.** Python calls a function of ours before every sensitive
+   action, such as opening a file or sending a signal, and our function refuses.
+5. **No secrets.** The child process gets an empty folder and almost no
    environment variables, so your API key isn't visible to it.
+
+**Why so many layers?** A review found that layer 1 on its own could be fooled:
+`from random import _os` hands the code the `os` module that `random` uses
+inside, and from there it could read the server's API key. Python is too
+flexible for a list of banned things to be complete. So the tests run code that
+layer 1 would refuse, and check that layers 3 and 4 still stop it. When you
+can't make one wall perfect, build several, and test each one on its own.
 
 Be honest about the limits in interviews: this is good for a portfolio project.
 For a real product, you'd add a container with no network access (Docker or
@@ -509,7 +521,10 @@ malicious code in one of those. The defenses:
   release and push the image.
 - **Few outside actions.** The workflows use only GitHub's own actions
   (`actions/checkout`, `actions/setup-python` and CodeQL). Everything else is a
-  plain shell command we can read. Checkouts use `persist-credentials: false`, so
+  plain shell command we can read, except Docker's own build tools, which the
+  release job runs as container images to build for ARM. The one that needs full
+  rights on the runner is pinned to an exact build by its digest, the same way
+  `uv.lock` pins packages by hash. Checkouts use `persist-credentials: false`, so
   the token is not left on disk for later steps to find.
 - **No script injection.** A workflow never pastes outside text into a shell
   script with `${{ ... }}`. Imagine `run: echo "${{ github.event.pull_request.title }}"`
@@ -543,13 +558,15 @@ Versions follow [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 moves those notes under a version heading, merges, and pushes a tag such as
 `v0.2.0`. Then `release.yml` takes over:
 
-1. It checks that the tag matches `__version__` in the code, and that the
-   changelog has notes for that version.
+1. It checks that the tag is a version it can release (such as `v0.2.0` or the
+   pre-release `v0.2.0rc1`), that it matches `__version__` in the code, and that
+   the changelog has notes for that version.
 2. It runs all of CI again, on exactly the tagged commit.
-3. It creates a GitHub Release, with the changelog notes as its text.
-4. It builds the Docker image for Intel/AMD *and* ARM computers, and pushes it to
+3. It builds the Docker image for Intel/AMD *and* ARM computers, and pushes it to
    the GitHub Container Registry. The image comes with a *provenance* record (how
    and from what it was built) and an *SBOM* (a list of every package inside it).
+4. Only then does it create the GitHub Release, with the changelog notes as its
+   text. If the image fails, nothing has been announced yet.
 
 Nobody builds a release by hand, so every release is built the same way.
 
