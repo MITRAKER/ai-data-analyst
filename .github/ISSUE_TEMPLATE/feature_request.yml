@@ -1,0 +1,58 @@
+# A GitHub issue form for new ideas. GitHub shows the fields below as a web
+# form on the "New issue" page.
+# Docs: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms
+name: Feature request
+description: Suggest a new feature or an improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Start with the problem: a clear problem is more useful than a finished design. For a bigger change, please agree on the idea here before you start on the code.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Who has the problem, and when? What is hard or impossible today?
+      placeholder: When the agent makes a chart, I cannot save it as an image to use in a slide.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen? A rough idea is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve the problem, or workarounds you use today.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it happen?
+      description: Which part of the project is this about?
+      options:
+        - Backend API
+        - AI agent / tools
+        - Python sandbox
+        - Data loading / SQL
+        - Chat UI (planned)
+        - Docs
+        - CI/CD
+        - Other
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues
+          required: true

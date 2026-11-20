@@ -1,0 +1,200 @@
+# The single source of truth for the backend: what it depends on and how every
+# quality tool is configured. LEARNING.md (Lesson 3) explains each section.
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-data-analyst"
+dynamic = ["version"] # read from app/__init__.py, so it is written in one place only
+description = "Ask questions about your data in plain English; an AI agent answers with SQL, Python and charts."
+license = "MIT"
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = [
+    "anthropic>=2.9",
+    "duckdb>=2.0",
+    "fastapi>=0.163",
+    "numpy>=2.5",
+    "pandas>=3.1",
+    "pydantic>=2.14",
+    "python-multipart>=0.0.34",
+    "uvicorn[standard]>=0.54",
+]
+
+[project.urls]
+Repository = "https://github.com/MITRAKER/ai-data-analyst"
+Changelog = "https://github.com/MITRAKER/ai-data-analyst/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ai-analyst = "app.cli:main"
+
+# Tools only developers need. `uv sync` installs them; the Docker image does not.
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.2",
+    "check-jsonschema>=0.39", # pre-commit: validates the GitHub Actions and Dependabot files
+    "detect-secrets>=1.5", # pre-commit: blocks commits that contain keys or passwords
+    "httpx2>=2.16",
+    "mypy>=2.4",
+    "pandas-stubs>=3.1",
+    "pip-audit>=2.10",
+    "pre-commit>=4.7",
+    "pre-commit-hooks>=6.0", # pre-commit: file hygiene checks
+    "pytest>=9.2",
+    "pytest-cov>=7.1",
+    "ruff>=0.17.5",
+    "shellcheck-py>=0.11", # pre-commit: lints the shell scripts in scripts/
+    "zizmor>=1.32", # pre-commit: finds security problems in the GitHub Actions files
+]
+
+[tool.hatch.version]
+path = "app/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ---------------------------------------------------------------------------
+# Ruff: linter and formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "A",     # do not shadow Python's built-in names
+    "ARG",   # unused function arguments
+    "ASYNC", # blocking calls inside async functions
+    "B",     # bugbear: likely bugs and design problems
+    "BLE",   # no blind `except Exception`
+    "C4",    # clearer comprehensions
+    "C90",   # McCabe complexity (Power of Ten rule 1: simple control flow)
+    "D",     # docstrings
+    "DTZ",   # timezone-aware datetimes
+    "E",     # pycodestyle errors
+    "ERA",   # no commented-out code
+    "EXE",   # executable-file hygiene
+    "F",     # pyflakes: undefined names, unused imports
+    "FAST",  # FastAPI best practices
+    "FLY",   # f-strings over string joins
+    "FURB",  # modern idioms
+    "I",     # sorted imports
+    "ICN",   # standard import aliases (pd, np)
+    "INP",   # no implicit namespace packages
+    "ISC",   # implicit string concatenation
+    "N",     # naming conventions
+    "PERF",  # performance anti-patterns
+    "PGH",   # no blanket `# noqa` or `# type: ignore`
+    "PIE",   # unnecessary code
+    "PL",    # pylint: too many branches, statements, arguments; magic numbers
+    "PT",    # pytest style
+    "PTH",   # pathlib over os.path
+    "RET",   # return statements
+    "RSE",   # raise statements
+    "RUF",   # ruff's own rules (including unused `# noqa`)
+    "S",     # bandit: security problems
+    "SIM",   # simpler code
+    "SLF",   # no access to other objects' private members
+    "SLOT",  # __slots__ for subclasses of str/tuple
+    "T10",   # no debugger calls
+    "T20",   # no print() (except the CLI and the checker, below)
+    "TID",   # tidy imports
+    "TRY",   # exception handling
+    "UP",    # modern Python syntax
+    "W",     # pycodestyle warnings
+    "YTT",   # sys.version checks
+]
+ignore = [
+    "D105",   # magic methods document themselves
+    "D107",   # __init__ is documented in the class docstring
+    "ISC001", # conflicts with the formatter
+    "TRY003", # a descriptive message in `raise X("...")` is fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/cli.py" = ["T201"] # a command-line tool prints by design
+"tools/power_of_ten.py" = ["T201"] # so does the checker
+"tests/**" = [
+    "D",       # tests are named after what they check
+    "PLR2004", # expected values in tests are literal on purpose
+    "S101",    # pytest uses assert
+    "SLF001",  # tests may look inside objects
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tools"]
+
+# ---------------------------------------------------------------------------
+# Type checkers
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests", "tools"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+    "deprecated",
+    "exhaustive-match",
+    "explicit-override",
+    "ignore-without-code",
+    "mutable-override",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "unused-awaitable",
+]
+
+# basedpyright is a second, independent type checker. We use it mainly for one
+# check mypy does not have: reportUnusedCallResult (Power of Ten rule 7, "check
+# the return value of every function"). Write `_ = f()` to discard on purpose.
+[tool.basedpyright]
+include = ["app", "tests", "tools"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportUnusedCallResult = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportUnusedExpression = "error"
+
+# ---------------------------------------------------------------------------
+# Tests and coverage
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+filterwarnings = ["error"] # Power of Ten rule 10: a warning fails the test run
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["app", "tools"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "\\.\\.\\.$",
+]

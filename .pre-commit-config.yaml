@@ -1,0 +1,160 @@
+# pre-commit runs these checks on the files you are about to commit, before the
+# commit is made. `make setup` installs it. To run every hook on every file:
+#   cd backend && uv run pre-commit run --all-files
+#
+# Every hook is "local": it runs a tool from our own uv environment. So the tool
+# versions come from backend/uv.lock, the same versions CI uses, and Dependabot
+# keeps them up to date. Nothing else is downloaded.
+#
+# `uv run --project backend` runs a tool from the backend's environment but stays
+# in the repository root, where pre-commit passes the file names from.
+# `uv run --directory backend` moves into backend/ first, for tools that check
+# the whole project instead of single files.
+
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: local
+    hooks:
+      # ---- File hygiene (the pre-commit-hooks package) ----
+      - id: no-commit-to-branch
+        name: do not commit to main (use a branch and a pull request)
+        entry: uv run --project backend no-commit-to-branch --branch main
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: check-added-large-files
+        name: no files larger than 1 MB
+        # --enforce-all: check every file it is given, not only newly added ones.
+        entry: uv run --project backend check-added-large-files --maxkb=1024 --enforce-all
+        language: system
+      - id: check-case-conflict
+        name: no file names that differ only in case
+        entry: uv run --project backend check-case-conflict
+        language: system
+      - id: check-merge-conflict
+        name: no leftover merge-conflict markers
+        entry: uv run --project backend check-merge-conflict
+        language: system
+        types: [text]
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+        entry: uv run --project backend trailing-whitespace-fixer --markdown-linebreak-ext=md
+        language: system
+        types: [text]
+      - id: end-of-file-fixer
+        name: end every file with one newline
+        entry: uv run --project backend end-of-file-fixer
+        language: system
+        types: [text]
+      - id: mixed-line-ending
+        name: use LF line endings
+        entry: uv run --project backend mixed-line-ending --fix=lf
+        language: system
+        types: [text]
+        exclude: \.csv$ # CSV files use CRLF, as the CSV standard says (see .gitattributes)
+      - id: check-yaml
+        name: valid YAML
+        entry: uv run --project backend check-yaml
+        language: system
+        types: [yaml]
+      - id: check-toml
+        name: valid TOML
+        entry: uv run --project backend check-toml
+        language: system
+        types: [toml]
+      - id: check-executables-have-shebangs
+        name: executable files start with a shebang line
+        entry: uv run --project backend check-executables-have-shebangs
+        language: system
+        types: [text, executable]
+      - id: check-shebang-scripts-are-executable
+        name: files with a shebang line are executable
+        entry: uv run --project backend check-shebang-scripts-are-executable
+        language: system
+        types: [text]
+
+      # ---- Secrets: never commit a key or a password ----
+      - id: detect-private-key
+        name: no private keys
+        entry: uv run --project backend detect-private-key
+        language: system
+        types: [text]
+      - id: detect-secrets
+        name: no API keys, tokens or passwords
+        entry: uv run --project backend detect-secrets-hook
+        language: system
+        types: [text]
+        exclude: (^|/)uv\.lock$ # package hashes look like secrets, but are not
+
+      # ---- Shell scripts and GitHub Actions files ----
+      # check-jsonschema compares each file with the official schema for its
+      # kind, so a misspelled key fails here instead of on GitHub.
+      - id: check-github-workflows
+        name: GitHub workflows match their schema
+        entry: uv run --project backend check-jsonschema --builtin-schema vendor.github-workflows
+        language: system
+        files: ^\.github/workflows/[^/]+\.ya?ml$
+      - id: check-github-actions
+        name: GitHub actions match their schema
+        entry: uv run --project backend check-jsonschema --builtin-schema vendor.github-actions
+        language: system
+        files: ^\.github/actions/.+/action\.ya?ml$
+      - id: check-dependabot
+        name: Dependabot config matches its schema
+        entry: uv run --project backend check-jsonschema --builtin-schema vendor.dependabot
+        language: system
+        files: ^\.github/dependabot\.ya?ml$
+      - id: shellcheck
+        name: ShellCheck (shell scripts)
+        entry: uv run --project backend shellcheck
+        language: system
+        types: [shell]
+      - id: zizmor
+        name: zizmor (security of the GitHub Actions files)
+        # --offline: use only the checks that need no internet access.
+        entry: uv run --project backend zizmor --offline --no-progress .
+        language: system
+        files: ^\.github/|^\.pre-commit-config\.yaml$
+        pass_filenames: false
+
+      # ---- Python: the same checks as CI ----
+      - id: ruff-check
+        name: ruff check (lint)
+        entry: uv run --project backend ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --project backend ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run --directory backend mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run --directory backend basedpyright
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: power-of-ten
+        name: NASA/JPL Power of Ten
+        entry: uv run --directory backend python -m tools.power_of_ten app tools
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # ---- Before each push: the full test suite (it takes a few seconds) ----
+      - id: pytest
+        name: pytest with the coverage gate
+        entry: uv run --directory backend pytest --cov -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]

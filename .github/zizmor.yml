@@ -1,0 +1,17 @@
+# Settings for zizmor, the security linter for our GitHub Actions files. It runs
+# in pre-commit and in CI. LEARNING.md (Lesson 3) explains it.
+rules:
+  # A workflow step that "uses" an action runs someone else's code, with
+  # access to the job's token. If the version we point to can change under us,
+  # a hacked action could run in our CI.
+  unpinned-uses:
+    config:
+      policies:
+        # GitHub's own actions may use a version tag such as @v6. GitHub runs
+        # them, so trusting them adds no new party. Dependabot keeps the tags
+        # up to date.
+        "actions/*": ref-pin
+        "github/*": ref-pin
+        # Any other action must be pinned to a full commit hash, which can never
+        # change. (We use none today.)
+        "*": hash-pin

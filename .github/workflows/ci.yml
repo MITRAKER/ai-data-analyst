@@ -1,22 +1,201 @@
+# CI ("continuous integration") checks every change automatically. It runs on
+# every pull request and on every push to main. Each job below is one check, and
+# each runs on a fresh virtual machine ("runner") that GitHub provides. Merge a
+# pull request only when every check is green.
+#
+# Most jobs run a `make` command, so you can run exactly the same check on your
+# own computer before you push. LEARNING.md (Lesson 3) explains every job.
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+  # Once a week, so that a newly published vulnerability in one of our
+  # dependencies is found even when nobody pushes. Mondays at 05:17 UTC.
+  schedule:
+    - cron: "17 5 * * 1"
+  # The release workflow runs all of CI again on the commit it releases.
+  workflow_call:
+  # Adds a "Run workflow" button in the Actions tab, to start CI by hand.
+  workflow_dispatch:
+
+# Least privilege: the jobs may read the code and nothing else.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the CI run that is still going for the
+# old commit. Every other run gets a group of its own, so it is never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # bash with -e (stop at the first command that fails) and -o pipefail (a
+    # pipe fails when any command in it fails, not only the last one).
+    shell: bash
+
+env:
+  # Every uv command must use the exact versions in backend/uv.lock. If uv.lock
+  # does not match pyproject.toml, uv stops with an error.
+  UV_LOCKED: "1"
+  # uv must use the Python that setup-python installed, never download another.
+  UV_PYTHON_DOWNLOADS: never
+  # Show Ruff's findings as notes on the changed lines of a pull request.
+  RUFF_OUTPUT_FORMAT: github
 
 jobs:
-  backend-tests:
+  lint:
+    name: Lint and format (Ruff)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
+    # Stop a job that hangs, instead of using up CI minutes.
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # persist-credentials: false means the job's access token is not saved
+      # inside the checked-out folder, where later steps could read it.
+      - name: Check out the code
+        uses: actions/checkout@v6
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements*.txt
-      - run: pip install -r requirements-dev.txt
-      - run: python -m pytest -q
+          persist-credentials: false
+      - name: Set up Python, uv and the dependencies
+        uses: $/.github/actions/setup-backend
+      - name: Run Ruff
+        run: make lint
+
+  typecheck:
+    name: Types (mypy and basedpyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python, uv and the dependencies
+        uses: $/.github/actions/setup-backend
+      - name: Run mypy and basedpyright
+        run: make typecheck
+
+  jpl:
+    name: NASA/JPL Power of Ten
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python, uv and the dependencies
+        uses: $/.github/actions/setup-backend
+      - name: Run the Power of Ten checker
+        run: make jpl
+
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Finish the tests on every Python version, even after one has failed.
+      fail-fast: false
+      matrix:
+        # The oldest version we support (requires-python in pyproject.toml),
+        # the version in the Docker image, and the newest.
+        python: ["3.12", "3.13", "3.14"]
+    env:
+      # Every uv command in this job uses this Python version, instead of the
+      # one in backend/.python-version.
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python, uv and the dependencies
+        uses: $/.github/actions/setup-backend
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the tests (fails below 95% branch coverage)
+        run: make test
+      # The coverage table appears on the summary page of the run. It runs even
+      # when the tests failed, but not when the run was cancelled.
+      - name: Add the coverage table to the run summary
+        if: ${{ !cancelled() }}
+        working-directory: backend
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          {
+            echo "### Test coverage on Python $PYTHON_VERSION"
+            uv run coverage report --format=markdown --fail-under=0
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python, uv and the dependencies
+        uses: $/.github/actions/setup-backend
+      - name: Look for known vulnerabilities in the locked dependencies
+        run: make security
+
+  hygiene:
+    name: Files, secrets, scripts and workflows (pre-commit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python, uv and the dependencies
+        uses: $/.github/actions/setup-backend
+      # The same hooks that run before each commit, on every file. The Python
+      # hooks are skipped because the jobs above run those tools already.
+      # no-commit-to-branch is skipped because CI also checks main itself.
+      - name: Run the pre-commit hooks on every file
+        env:
+          SKIP: no-commit-to-branch,ruff-check,ruff-format,mypy,basedpyright,power-of-ten
+        run: uv run --project backend pre-commit run --all-files --show-diff-on-failure
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: make docker
+      - name: Start the image and use the app
+        run: make smoke
+
+  # One check that sums up all the others. In the branch protection settings,
+  # make this the single required check, instead of listing every job there.
+  all-passed:
+    name: All checks passed
+    # Run even when a job above failed, so this check fails instead of being
+    # skipped (GitHub treats a skipped required check as passed).
+    if: ${{ always() }}
+    needs: [lint, typecheck, jpl, test, audit, hygiene, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::At least one check did not pass."
+              exit 1
+            fi
+          done

@@ -1,0 +1,36 @@
+# EditorConfig keeps basic formatting the same in every editor: character set,
+# line endings, indentation and whitespace. Most editors read this file on their
+# own; some need a plugin. See https://editorconfig.org
+#
+# Each [section] is a file pattern. When a file matches several sections, the
+# later ones win. Ruff still formats the Python code; this file only sets the
+# basics for every file.
+
+# Stop here: do not look for more .editorconfig files in parent folders.
+root = true
+
+# Every file
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# YAML and JSON files, and shell scripts, indent by 2 spaces. (TOML keeps 4,
+# the style uv uses when it edits pyproject.toml.)
+[*.{yml,yaml,json,sh}]
+indent_size = 2
+
+# In Markdown, two spaces at the end of a line make a line break, so keep them.
+[*.md]
+trim_trailing_whitespace = false
+
+# make needs a real tab at the start of each recipe line.
+[Makefile]
+indent_style = tab
+
+# CSV files use CRLF line endings, as the CSV standard (RFC 4180) says.
+[*.csv]
+end_of_line = crlf
