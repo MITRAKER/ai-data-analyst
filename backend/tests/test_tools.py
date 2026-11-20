@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -409,13 +410,13 @@ def test_sandbox_still_works_for_analysis() -> None:
 
 
 def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
-    secret = tmp_path / "secret.txt"
-    _ = secret.write_text("FAKE-SECRET-FOR-THE-TEST", encoding="utf-8")
+    planted = tmp_path / "planted.txt"
+    _ = planted.write_text("PLANTED-TEXT-FOR-THE-TEST", encoding="utf-8")
     # Closing stdin frees descriptor 0, which used to let the next open() succeed.
-    code = f"import os\nos.close(0)\nprint(os.read(os.open({str(secret)!r}, 0), 100))"
+    code = f"import os\nos.close(0)\nprint(os.read(os.open({str(planted)!r}, 0), 100))"
     result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
     assert not result.ok
-    assert "FAKE-SECRET" not in result.stdout
+    assert "PLANTED-TEXT" not in result.stdout
     assert result.error is not None
     assert "Not allowed in the sandbox: open" in result.error
     assert "no file or network access" in result.error
@@ -427,7 +428,20 @@ def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
         ("import os\nos.kill(os.getppid(), 0)", "os.kill"),
         ("import os\nos.fork()", "os.fork"),
         ("import os\nos.system('true')", "os.system"),
+        # A subinterpreter would run code without the audit hook. The sandbox never
+        # loads the module that creates them, and refuses to load it later.
         ("import _interpreters", "import"),
+        ("import sys\ndel sys.modules['_interpreters']\nimport _interpreters", "import"),
+        (
+            (
+                "import _imp\n"
+                "class Spec:\n"
+                "    name = 'any._interpreters'\n"
+                "    origin = ''\n"
+                "_imp.create_dynamic(Spec)"
+            ),
+            "import",
+        ),
         ("import ctypes\nctypes.CDLL(None)", "ctypes.dlopen"),
         ("import socket", "import"),
         (
@@ -442,6 +456,11 @@ def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
             ),
             "object.__setattr__",
         ),
+        (
+            "import sys\nsys._getframe(1).f_globals['audit'].__defaults__ = (print, str)",
+            "object.__setattr__",
+        ),
+        ("import sys\ndel sys._getframe(1).f_globals['audit'].__defaults__", "object.__delattr__"),
     ],
 )
 def test_sandbox_blocks_actions_that_leave_the_process(code: str, action: str) -> None:
@@ -451,18 +470,72 @@ def test_sandbox_blocks_actions_that_leave_the_process(code: str, action: str) -
     assert f"Not allowed in the sandbox: {action}" in result.error
 
 
+@pytest.mark.skipif(
+    "_interpreters" not in sys.builtin_module_names,
+    reason="only a Python with the module built in can make it without reading a file",
+)
+def test_sandbox_cannot_start_a_subinterpreter() -> None:
+    # This Python can make a fresh copy of the module without the import system,
+    # so the audit hook never sees it. Starting a subinterpreter still fails,
+    # because Python reads files to set one up.
+    code = (
+        "import _imp\n"
+        "class Spec:\n"
+        "    name = '_interpreters'\n"
+        "interpreters = _imp.create_builtin(Spec)\n"
+        "interpreters.run_string(interpreters.create(), 'print(123 * 1000)')"
+    )
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.error is not None
+    assert "interpreter creation failed" in result.error
+    assert "123000" not in result.stdout
+
+
+# Python removes the audit hook while it shuts down, and an object it frees
+# after that runs its __del__ method without the hook. This object waits in the
+# list of functions for os.fork(), which Python frees after the hook is gone.
+_RUNS_AFTER_THE_HOOK = (
+    "import os\n"
+    "class Escape:\n"
+    "    def __del__(self, kill=os.kill, getppid=os.getppid, write=os.write):\n"
+    "        kill(getppid(), 0)\n"
+    "        write(1, b'ESCAPED')\n"
+    "    def before(self):\n"
+    "        pass\n"
+    "os.register_at_fork(before=Escape().before)\n"
+    "print('registered')\n"
+)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "",
+        # Code that also breaks the sandbox's own way out still cannot get there.
+        "import os\nos._exit = lambda status: None\n",
+    ],
+)
+def test_sandbox_runs_no_code_after_the_audit_hook_is_removed(tamper: str) -> None:
+    code = tamper + _RUNS_AFTER_THE_HOOK
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    output = result.stdout + (result.error or "")
+    assert "registered" in output
+    assert "ESCAPED" not in output
+
+
 def test_sandbox_hook_cannot_be_switched_off_by_changing_variables(tmp_path: Path) -> None:
-    secret = tmp_path / "secret.txt"
-    _ = secret.write_text("FAKE-SECRET-FOR-THE-TEST", encoding="utf-8")
+    planted = tmp_path / "planted.txt"
+    _ = planted.write_text("PLANTED-TEXT-FOR-THE-TEST", encoding="utf-8")
     # The hook reads no variables, so breaking the name it raises only changes the error.
     code = (
         "import sys\n"
         "sys._getframe(1).f_globals['PermissionError'] = None\n"
-        f"print(open({str(secret)!r}).read())"
+        f"print(open({str(planted)!r}).read())"
     )
     result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
     assert not result.ok
-    assert "FAKE-SECRET" not in result.stdout
+    assert "PLANTED-TEXT" not in result.stdout
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="the root user is exempt from the process limit")

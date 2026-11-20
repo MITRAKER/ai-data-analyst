@@ -22,7 +22,10 @@ if another one has a gap.
 4. An audit hook in that process (PEP 578): Python calls it before every
    sensitive action, and it refuses opening files, starting processes,
    sending signals, sockets, ctypes, changing the limits, and importing
-   modules that could get around them.
+   modules that could get around them. The process never loads the modules
+   that start subinterpreters, which would run code without the hook. And
+   because Python removes the hook when it shuts down, the process ends at
+   once when the code is done, without that shutdown.
 5. Limits in this process: we read at most `output_bytes` of output, and a
    watchdog kills the child process when the wall-clock time limit passes.
 
@@ -205,13 +208,20 @@ MAX_OUTPUT_CHARS: Final = 8_000
 ERROR_TAIL_LINES: Final = 8
 
 # The child process runs this script. It reads the AI's code and the data,
-# then locks itself down, then runs the code. Everything the code might need
-# (allowed modules, and parts of pandas that load lazily) is imported before
-# the lock-down, because afterwards no file can be opened.
+# then locks itself down, then runs the code, then ends at once. Everything
+# the code might need (allowed modules, and parts of pandas that load lazily)
+# is imported before the lock-down, because afterwards no file can be opened.
 _RUNNER: Final = """\
+import sys
+
+# Code in a subinterpreter would run without this process's audit hook, and
+# pandas does not need one, so the modules that create them are never loaded.
+for name in ("_interpchannels", "_interpqueues", "_interpreters"):
+    sys.modules[name] = None
+
 import collections, datetime, decimal, fractions, functools, itertools, json, math
 import random, re, statistics
-import linecache, resource, signal, sys
+import linecache, os, resource, signal
 
 import numpy as np
 import numpy.fft, numpy.linalg, numpy.polynomial, numpy.random
@@ -228,21 +238,28 @@ def limit(kind, soft, hard):
     resource.setrlimit(kind, (soft, hard))
 
 
-def audit(event, args):
+def audit(event, args, leave=os._exit, text=str):
     # Python calls this before each sensitive action, and raising stops the
-    # action. It reads only constants, so code that changes this script's
-    # variables cannot switch it off.
+    # action. It uses only constants and its own default arguments, which no
+    # code can replace (see below), so code that changes this script's
+    # variables or the built-ins cannot switch it off.
+    if event == "cpython.PyInterpreterState_Clear":
+        # Python is shutting down and removes this hook next. Code could still
+        # run after that (in __del__ methods), so the process ends here.
+        leave(1)
     if event == "import":  # only for modules that are not loaded yet
-        name = args[0].partition(".")[0]
-        blocked = name.startswith(("_test", "_xx")) or name in {
-            "_ctypes", "_interpchannels", "_interpqueues", "_interpreters",
-            "_multiprocessing", "_posixshmem", "_posixsubprocess", "_socket", "_sqlite3",
-            "_ssl", "concurrent", "ctypes", "faulthandler", "fcntl", "mmap",
-            "multiprocessing", "pty", "resource", "socket", "sqlite3", "ssl", "subprocess",
-            "syslog", "termios",
-        }
-    elif event == "object.__setattr__":
-        blocked = args[1] == "__code__"  # replacing a function's code, this one's too
+        blocked = False
+        for part in text.split(args[0], "."):  # "a.b" is blocked if a or b is
+            blocked = blocked or part.startswith(("_test", "_xx")) or part in {
+                "_ctypes", "_interpchannels", "_interpqueues", "_interpreters",
+                "_multiprocessing", "_posixshmem", "_posixsubprocess", "_socket", "_sqlite3",
+                "_ssl", "concurrent", "ctypes", "faulthandler", "fcntl", "mmap",
+                "multiprocessing", "pty", "resource", "socket", "sqlite3", "ssl", "subprocess",
+                "syslog", "termios",
+            }
+    elif event in ("object.__setattr__", "object.__delattr__"):
+        # Replacing a function's code or default arguments, this one's too.
+        blocked = args[1] in ("__code__", "__defaults__", "__kwdefaults__")
     else:
         blocked = event.startswith((
             "code.__new__", "ctypes.", "gc.", "glob.", "marshal.", "open", "os.", "pickle.",
@@ -251,6 +268,23 @@ def audit(event, args):
         ))
     if blocked:
         raise PermissionError(f"Not allowed in the sandbox: {event}")
+
+
+def run(code, namespace):
+    # Runs the code as `python user_code.py` would, and returns the exit status.
+    try:
+        exec(code, namespace)
+    except SystemExit as stop:  # sys.exit() follows Python's rules for the status
+        if stop.code is None or isinstance(stop.code, int):
+            return stop.code or 0
+        sys.stdout.flush()
+        print(stop.code, file=sys.stderr)
+        return 1
+    except BaseException:
+        sys.stdout.flush()  # what the code printed comes before the error
+        sys.excepthook(*sys.exc_info())
+        return 1
+    return 0
 
 
 with open("user_code.py", encoding="utf-8") as source_file:
@@ -268,7 +302,12 @@ limit(resource.RLIMIT_FSIZE, 0, 0)  # nothing can be written to a file
 limit(resource.RLIMIT_NOFILE, 0, 0)  # no new file descriptor, even after closing one
 limit(resource.RLIMIT_NPROC, 0, 0)  # no new process or thread (root is exempt)
 sys.addaudithook(audit)
-exec(code, {"__name__": "__main__", "df": df, "pd": pd, "np": np})
+status = run(code, {"__name__": "__main__", "df": df, "pd": pd, "np": np})
+# End the process now, without Python's normal shutdown: during that shutdown
+# Python removes the audit hook, and code could still run after that.
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(status)
 """
 
 

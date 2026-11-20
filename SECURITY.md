@@ -115,14 +115,18 @@ protects you.
 6. **Watched while it runs.** An audit hook
    ([PEP 578](https://peps.python.org/pep-0578/)) in that process refuses opening
    files, starting programs, sending signals, sockets, `ctypes`, changing the
-   limits, and importing modules that could get around them. Only the code's
-   printed output and error messages come back.
+   limits, and importing modules that could get around them. The process never
+   loads the modules that start a second Python interpreter inside it (a
+   subinterpreter), because code there would run without the hook. Python also
+   removes the hook when it shuts down, so the process ends at once when the
+   code is done, without that shutdown. Only the code's printed output and
+   error messages come back.
 
 A check of the syntax tree can never be complete, because Python is a very
 flexible language. So layers 5 and 6 do not rely on it: the tests run code that
 the check would refuse, for example code that closes a file descriptor to open a
-file, or that tries to send a signal to the server, and check that it still
-fails.
+file, that tries to send a signal to the server, or that leaves code behind to
+run after the hook is gone, and check that it still fails.
 
 ### What these layers do not do
 
