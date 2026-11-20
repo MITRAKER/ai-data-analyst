@@ -255,14 +255,15 @@ flexible for a list of banned things to be complete. So the tests run code that
 layer 1 would refuse, and check that layers 3 and 4 still stop it. When you
 can't make one wall perfect, build several, and test each one on its own.
 
-**Why test on two Python versions?** CI runs every test on Python 3.13 and 3.14,
-and one sandbox test passed on 3.13 but failed on 3.14. In 3.14, pandas loads a
-module that starts subinterpreters: a second Python inside the same process,
-which our audit hook does not watch. Looking closer found one more gap: code
-could leave a `__del__` method behind that runs while Python shuts down, after
-the hook is gone. The sandbox now never loads that module and skips the
-shutdown, and the tests try both tricks. A new version of a language or a
-library can change what your code relies on, so test every version you support.
+**Why test on several Python versions?** CI runs every test on Python 3.12, 3.13
+and 3.14, and one sandbox test passed on 3.12 and 3.13 but failed on 3.14. In
+3.14, pandas loads a module that starts subinterpreters: a second Python inside
+the same process, which our audit hook does not watch. Looking closer found one
+more gap: code could leave a `__del__` method behind that runs while Python
+shuts down, after the hook is gone. The sandbox now never loads that module and
+skips the shutdown, and the tests try both tricks. A new version of a language
+or a library can change what your code relies on, so test every version you
+support.
 
 Be honest about the limits in interviews: this is good for a portfolio project.
 For a real product, you'd add a container with no network access (Docker or
