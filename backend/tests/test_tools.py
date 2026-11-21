@@ -442,6 +442,15 @@ def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
             ),
             "import",
         ),
+        # Python 3.14 can ask another Python process, such as the server, to run a
+        # script (this code asks its own process), and its _remote_debugging module
+        # reads the memory of other processes.
+        pytest.param(
+            "import os, sys\nsys.remote_exec(os.getpid(), 'user_code.py')",
+            "sys.remote_exec",
+            marks=pytest.mark.skipif(sys.version_info < (3, 14), reason="new in Python 3.14"),
+        ),
+        ("import _remote_debugging", "import"),
         ("import ctypes\nctypes.CDLL(None)", "ctypes.dlopen"),
         ("import socket", "import"),
         (
@@ -470,26 +479,32 @@ def test_sandbox_blocks_actions_that_leave_the_process(code: str, action: str) -
     assert f"Not allowed in the sandbox: {action}" in result.error
 
 
-@pytest.mark.skipif(
-    "_interpreters" not in sys.builtin_module_names,
-    reason="only a Python with the module built in can make it without reading a file",
-)
-def test_sandbox_cannot_start_a_subinterpreter() -> None:
-    # This Python can make a fresh copy of the module without the import system,
-    # so the audit hook never sees it. Starting a subinterpreter still fails,
-    # because Python reads files to set one up.
-    code = (
-        "import _imp\n"
-        "class Spec:\n"
-        "    name = '_interpreters'\n"
-        "interpreters = _imp.create_builtin(Spec)\n"
-        "interpreters.run_string(interpreters.create(), 'print(123 * 1000)')"
-    )
+@pytest.mark.parametrize("name", ["_interpreters", "_testinternalcapi"])
+def test_sandbox_makes_no_new_modules(name: str) -> None:
+    # Some Python builds compile these modules in, and _imp.create_builtin()
+    # makes them without the import event that the audit hook checks.
+    code = f"import _imp\nclass Spec:\n    name = {name!r}\nprint(_imp.create_builtin(Spec))"
     result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
     assert not result.ok
     assert result.error is not None
-    assert "interpreter creation failed" in result.error
-    assert "123000" not in result.stdout
+    assert f"No new modules can be loaded in the sandbox: {name}" in result.error
+
+
+@pytest.mark.parametrize(
+    ("code", "ok", "error"),
+    [
+        ("print('done')\nraise SystemExit", True, None),
+        ("raise SystemExit(0)", True, None),
+        ("raise SystemExit(3)", False, "The code failed."),
+        ("raise SystemExit(256)", False, "The code failed."),  # the OS would cut 256 to 0
+        ("raise SystemExit(2 ** 100)", False, "The code failed."),
+        ("raise SystemExit('stopped early')", False, "stopped early"),
+    ],
+)
+def test_sandbox_reports_sys_exit_like_python(code: str, ok: bool, error: str | None) -> None:
+    result = run_python(code, pd.DataFrame())
+    assert result.ok is ok
+    assert result.error == error
 
 
 # Python removes the audit hook while it shuts down, and an object it frees
@@ -527,15 +542,18 @@ def test_sandbox_runs_no_code_after_the_audit_hook_is_removed(tamper: str) -> No
 def test_sandbox_hook_cannot_be_switched_off_by_changing_variables(tmp_path: Path) -> None:
     planted = tmp_path / "planted.txt"
     _ = planted.write_text("PLANTED-TEXT-FOR-THE-TEST", encoding="utf-8")
-    # The hook reads no variables, so breaking the name it raises only changes the error.
+    # The hook keeps what it uses in its own default arguments, not in variables.
     code = (
-        "import sys\n"
+        "import builtins, sys\n"
         "sys._getframe(1).f_globals['PermissionError'] = None\n"
+        "builtins.PermissionError = None\n"
         f"print(open({str(planted)!r}).read())"
     )
     result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
     assert not result.ok
     assert "PLANTED-TEXT" not in result.stdout
+    assert result.error is not None
+    assert "Not allowed in the sandbox: open" in result.error
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="the root user is exempt from the process limit")

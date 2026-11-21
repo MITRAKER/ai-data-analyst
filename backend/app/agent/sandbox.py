@@ -21,11 +21,15 @@ if another one has a gap.
    processes or threads.
 4. An audit hook in that process (PEP 578): Python calls it before every
    sensitive action, and it refuses opening files, starting processes,
-   sending signals, sockets, ctypes, changing the limits, and importing
-   modules that could get around them. The process never loads the modules
-   that start subinterpreters, which would run code without the hook. And
-   because Python removes the hook when it shuts down, the process ends at
-   once when the code is done, without that shutdown.
+   sending signals, sockets, ctypes, making another Python process run a
+   script, changing the limits, and importing modules that could get around
+   them. After the lock-down the code can't load any module written in C that
+   wasn't loaded before, not even one compiled into Python itself. The
+   modules that start subinterpreters (which would run code without the hook)
+   are never loaded. Python removes the hook when it shuts down, so the
+   process ends with os._exit() as soon as the code is done; if the code
+   blocks that way out, the hook ends the process itself just before Python
+   removes it.
 5. Limits in this process: we read at most `output_bytes` of output, and a
    watchdog kills the child process when the wall-clock time limit passes.
 
@@ -210,7 +214,8 @@ ERROR_TAIL_LINES: Final = 8
 # The child process runs this script. It reads the AI's code and the data,
 # then locks itself down, then runs the code, then ends at once. Everything
 # the code might need (allowed modules, and parts of pandas that load lazily)
-# is imported before the lock-down, because afterwards no file can be opened.
+# is imported before the lock-down, because afterwards no file can be opened
+# and no module can be made.
 _RUNNER: Final = """\
 import sys
 
@@ -221,7 +226,7 @@ for name in ("_interpchannels", "_interpqueues", "_interpreters"):
 
 import collections, datetime, decimal, fractions, functools, itertools, json, math
 import random, re, statistics
-import linecache, os, resource, signal
+import _imp, linecache, os, resource, signal
 
 import numpy as np
 import numpy.fft, numpy.linalg, numpy.polynomial, numpy.random
@@ -238,7 +243,7 @@ def limit(kind, soft, hard):
     resource.setrlimit(kind, (soft, hard))
 
 
-def audit(event, args, leave=os._exit, text=str):
+def audit(event, args, leave=os._exit, text=str, refuse=PermissionError):
     # Python calls this before each sensitive action, and raising stops the
     # action. It uses only constants and its own default arguments, which no
     # code can replace (see below), so code that changes this script's
@@ -251,11 +256,11 @@ def audit(event, args, leave=os._exit, text=str):
         blocked = False
         for part in text.split(args[0], "."):  # "a.b" is blocked if a or b is
             blocked = blocked or part.startswith(("_test", "_xx")) or part in {
-                "_ctypes", "_interpchannels", "_interpqueues", "_interpreters",
-                "_multiprocessing", "_posixshmem", "_posixsubprocess", "_socket", "_sqlite3",
-                "_ssl", "concurrent", "ctypes", "faulthandler", "fcntl", "mmap",
-                "multiprocessing", "pty", "resource", "socket", "sqlite3", "ssl", "subprocess",
-                "syslog", "termios",
+                "_ctypes", "_imp", "_interpchannels", "_interpqueues", "_interpreters",
+                "_multiprocessing", "_posixshmem", "_posixsubprocess", "_remote_debugging",
+                "_socket", "_sqlite3", "_ssl", "concurrent", "ctypes", "faulthandler", "fcntl",
+                "mmap", "multiprocessing", "pty", "resource", "socket", "sqlite3", "ssl",
+                "subprocess", "syslog", "termios",
             }
     elif event in ("object.__setattr__", "object.__delattr__"):
         # Replacing a function's code or default arguments, this one's too.
@@ -264,21 +269,28 @@ def audit(event, args, leave=os._exit, text=str):
         blocked = event.startswith((
             "code.__new__", "ctypes.", "gc.", "glob.", "marshal.", "open", "os.", "pickle.",
             "resource.", "shutil.", "signal.", "socket.", "sqlite3.", "subprocess.",
-            "syslog.", "tempfile.",
+            "sys.remote_exec", "syslog.", "tempfile.",
         ))
     if blocked:
-        raise PermissionError(f"Not allowed in the sandbox: {event}")
+        raise refuse(f"Not allowed in the sandbox: {event}")
+
+
+def no_new_modules(spec):
+    # Replaces _imp.create_builtin(), which makes a module that is compiled
+    # into Python (some builds compile in test modules too) without the
+    # "import" event that the hook checks. The code's modules are loaded by now.
+    raise ImportError(f"No new modules can be loaded in the sandbox: {spec.name}")
 
 
 def run(code, namespace):
     # Runs the code as `python user_code.py` would, and returns the exit status.
     try:
         exec(code, namespace)
-    except SystemExit as stop:  # sys.exit() follows Python's rules for the status
+    except SystemExit as stop:  # sys.exit(): None or 0 is a success, like in Python
         if stop.code is None or isinstance(stop.code, int):
-            return stop.code or 0
+            return 1 if stop.code else 0
         sys.stdout.flush()
-        print(stop.code, file=sys.stderr)
+        print(stop.code, file=sys.stderr)  # Python prints any other value, and fails
         return 1
     except BaseException:
         sys.stdout.flush()  # what the code printed comes before the error
@@ -301,10 +313,12 @@ if sys.platform != "darwin":  # macOS does not support memory limits this way
 limit(resource.RLIMIT_FSIZE, 0, 0)  # nothing can be written to a file
 limit(resource.RLIMIT_NOFILE, 0, 0)  # no new file descriptor, even after closing one
 limit(resource.RLIMIT_NPROC, 0, 0)  # no new process or thread (root is exempt)
+_imp.create_builtin = no_new_modules
 sys.addaudithook(audit)
 status = run(code, {"__name__": "__main__", "df": df, "pd": pd, "np": np})
 # End the process now, without Python's normal shutdown: during that shutdown
-# Python removes the audit hook, and code could still run after that.
+# Python removes the audit hook, and code could still run after that. (If the
+# code stops us from getting here, audit() ends the process instead.)
 sys.stdout.flush()
 sys.stderr.flush()
 os._exit(status)

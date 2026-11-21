@@ -244,7 +244,10 @@ Same idea as Lesson 1, defense in depth:
 4. **An audit hook.** Python calls a function of ours before every sensitive
    action, such as opening a file or sending a signal, and our function refuses.
    Python removes the hook when it shuts down, so the process ends with
-   `os._exit()` as soon as the code is done, without that shutdown.
+   `os._exit()` as soon as the code is done, without that shutdown. If the code
+   breaks that way out, the hook ends the process itself, just before Python
+   would remove it. And once the code starts, it can't load a new module written
+   in C, because some of them can do things the hook never sees.
 5. **No secrets.** The child process gets an empty folder and almost no
    environment variables, so your API key isn't visible to it.
 
@@ -258,10 +261,15 @@ can't make one wall perfect, build several, and test each one on its own.
 **Why test on several Python versions?** CI runs every test on Python 3.12, 3.13
 and 3.14, and one sandbox test passed on 3.12 and 3.13 but failed on 3.14. In
 3.14, pandas loads a module that starts subinterpreters: a second Python inside
-the same process, which our audit hook does not watch. Looking closer found one
-more gap: code could leave a `__del__` method behind that runs while Python
-shuts down, after the hook is gone. The sandbox now never loads that module and
-skips the shutdown, and the tests try both tricks. A new version of a language
+the same process, which our audit hook does not watch. Looking closer found
+three more gaps. Code could leave a `__del__` method behind that runs while
+Python shuts down, after the hook is gone. Some Python builds include Python's
+own test modules, which can start subinterpreters too, and Python can make a
+module that is built into it without asking the hook. And Python 3.14 added
+`sys.remote_exec()`, which asks another Python process, such as the server, to
+run a script. The sandbox now never loads those modules, loads no new module
+written in C once the code starts, skips the shutdown and refuses
+`sys.remote_exec()`, and the tests try each trick. A new version of a language
 or a library can change what your code relies on, so test every version you
 support.
 
