@@ -129,9 +129,9 @@ protects you.
 A check of the syntax tree can never be complete, because Python is a very
 flexible language. So layers 5 and 6 do not rely on it: the tests run code that
 the check would refuse, and check that it still fails. For example, that code
-closes a file descriptor to open a file, tries to send a signal to the server,
-makes a module built into Python, or leaves code behind to run after the hook is
-gone.
+closes a file descriptor to open a file, tries to send a signal to the server or
+to make a module built into Python, or leaves code behind to run after the hook
+is gone.
 
 ### What these layers do not do
 
