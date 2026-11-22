@@ -21,7 +21,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: builder
 # ---------------------------------------------------------------------------
-FROM python:3.13-slim AS builder
+FROM python:3.15-slim AS builder
 
 # Install uv, our package manager. The exact version is pinned (the same one
 # CI uses), so every build behaves the same. --no-cache-dir keeps pip's
@@ -60,7 +60,7 @@ RUN uv sync --locked --no-dev --no-editable
 # Stage 2: the final image
 # ---------------------------------------------------------------------------
 # Use the same base image as the builder: the venv expects this exact Python.
-FROM python:3.13-slim
+FROM python:3.15-slim
 
 # Labels describe the image to registries and tools. These are the standard
 # OCI names. The "source" label links the image on ghcr.io to this repository.
