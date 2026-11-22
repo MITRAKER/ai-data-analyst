@@ -22,7 +22,7 @@ runs:
     # Give setup-python either the version or the file, never both: with both,
     # it uses the version and prints a warning.
     - name: Install Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ inputs.python-version }}
         python-version-file: ${{ inputs.python-version == '' && 'backend/.python-version' || '' }}
