@@ -2,7 +2,7 @@
 # quality tool is configured. LEARNING.md (Lesson 3) explains each section.
 
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
