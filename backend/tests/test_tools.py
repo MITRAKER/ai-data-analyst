@@ -429,8 +429,8 @@ def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
         ("import os\nos.fork()", "os.fork"),
         ("import os\nos.system('true')", "os.system"),
         # A subinterpreter would run code without the audit hook. The sandbox never
-        # loads the module that creates them, and refuses to load it later.
-        ("import _interpreters", "import"),
+        # loads the module that creates them (see the next test), and refuses to
+        # load it later.
         ("import sys\ndel sys.modules['_interpreters']\nimport _interpreters", "import"),
         (
             (
@@ -477,6 +477,24 @@ def test_sandbox_blocks_actions_that_leave_the_process(code: str, action: str) -
     assert not result.ok
     assert result.error is not None
     assert f"Not allowed in the sandbox: {action}" in result.error
+
+
+def test_sandbox_never_loads_the_subinterpreter_module() -> None:
+    # The sandbox puts None in sys.modules under the module's name before
+    # anything else loads, so pandas does not load it and the code cannot.
+    code = "import sys\nprint(sys.modules['_interpreters'])\nimport _interpreters"
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.stdout == "None"
+    assert result.error is not None
+    # Up to Python 3.14 the import reaches the audit hook, which refuses it.
+    # From 3.15 on, Python refuses it itself, because of the None.
+    expected = (
+        "import of _interpreters halted; None in sys.modules"
+        if sys.version_info >= (3, 15)
+        else "Not allowed in the sandbox: import"
+    )
+    assert expected in result.error
 
 
 @pytest.mark.parametrize("name", ["_interpreters", "_testinternalcapi"])

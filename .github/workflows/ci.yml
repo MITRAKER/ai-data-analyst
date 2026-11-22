@@ -99,9 +99,11 @@ jobs:
       # Finish the tests on every Python version, even after one has failed.
       fail-fast: false
       matrix:
-        # The oldest version we support (requires-python in pyproject.toml),
-        # the version in the Docker image, and the newest.
-        python: ["3.12", "3.13", "3.14"]
+        # Every version we support, from the oldest (requires-python in
+        # pyproject.toml) to the newest, which the Docker image uses. The
+        # sandbox relies on how Python works inside, and that changes between
+        # versions, so each one gets the full test run.
+        python: ["3.12", "3.13", "3.14", "3.15"]
     env:
       # Every uv command in this job uses this Python version, instead of the
       # one in backend/.python-version.

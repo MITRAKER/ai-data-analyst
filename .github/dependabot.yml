@@ -59,7 +59,8 @@ updates:
         patterns:
           - "*"
 
-  # The base image in backend/Dockerfile (python:3.13-slim).
+  # The base image in backend/Dockerfile (python:3.15-slim). Before you merge a
+  # new Python version here, add it to the test matrix in ci.yml.
   - package-ecosystem: "docker"
     directory: "/backend"
     schedule:

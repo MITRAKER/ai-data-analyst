@@ -258,20 +258,23 @@ flexible for a list of banned things to be complete. So the tests run code that
 layer 1 would refuse, and check that layers 3 and 4 still stop it. When you
 can't make one wall perfect, build several, and test each one on its own.
 
-**Why test on several Python versions?** CI runs every test on Python 3.12, 3.13
-and 3.14, and one sandbox test passed on 3.12 and 3.13 but failed on 3.14. In
-3.14, pandas loads a module that starts subinterpreters: a second Python inside
-the same process, which our audit hook does not watch. Looking closer found
-three more gaps. Code could leave a `__del__` method behind that runs while
-Python shuts down, after the hook is gone. Some Python builds include Python's
-own test modules, which can start subinterpreters too, and Python can make a
-module that is built into it without asking the hook. And Python 3.14 added
-`sys.remote_exec()`, which asks another Python process, such as the server, to
-run a script. The sandbox now never loads those modules, loads no new module
-written in C once the code starts, skips the shutdown and refuses
-`sys.remote_exec()`, and the tests try each trick. A new version of a language
-or a library can change what your code relies on, so test every version you
-support.
+**Why test on several Python versions?** CI runs every test on Python 3.12,
+3.13, 3.14 and 3.15. When we added 3.14, one sandbox test passed on 3.12 and
+3.13 but failed on 3.14. In 3.14, pandas loads a module that starts
+subinterpreters: a second Python inside the same process, which our audit hook
+does not watch. Looking closer found three more gaps. Code could leave a
+`__del__` method behind that runs while Python shuts down, after the hook is
+gone. Some Python builds include Python's own test modules, which can start
+subinterpreters too, and Python can make a module that is built into it without
+asking the hook. And Python 3.14 added `sys.remote_exec()`, which asks another
+Python process, such as the server, to run a script. The sandbox now never loads
+those modules, loads no new module written in C once the code starts, skips the
+shutdown and refuses `sys.remote_exec()`, and the tests try each trick. Python
+3.15 changed one more detail: when `sys.modules` holds `None` for a module,
+Python now refuses to import it before it asks the hook. The module still never
+loads, but the error is different, so the test expects each version's own error.
+A new version of a language or a library can change what your code relies on, so
+test every version you support.
 
 Be honest about the limits in interviews: this is good for a portfolio project.
 For a real product, you'd add a container with no network access (Docker or
@@ -422,7 +425,7 @@ them run a `make` command, so you can run the same check yourself first.
 | Lint and format (Ruff) | Likely bugs, security problems, style, and one consistent layout | `make lint` |
 | Types (mypy and basedpyright) | Every function has type hints, and every value is used the way its type allows | `make typecheck` |
 | NASA/JPL Power of Ten | Our coding standard (below) | `make jpl` |
-| Tests (Python 3.12, 3.13, 3.14) | Every test passes on every Python version we support, with at least 95% branch coverage | `make test` |
+| Tests (Python 3.12, 3.13, 3.14, 3.15) | Every test passes on every Python version we support, with at least 95% branch coverage | `make test` |
 | Dependency audit (pip-audit) | No package we use has a known vulnerability | `make security` |
 | Files, secrets, scripts and workflows (pre-commit) | Whitespace, line endings, valid YAML and TOML, no keys or passwords, ShellCheck, zizmor, and the schemas of the GitHub files | `cd backend && uv run pre-commit run --all-files` |
 | Docker image | The image builds, starts, passes its health check and answers real requests | `make docker smoke` |

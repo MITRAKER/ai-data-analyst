@@ -64,8 +64,8 @@ A Next.js chat UI is planned, but it does not exist yet.
 Some tips:
 
 - **Python:** uv reads `backend/.python-version` (3.13) and downloads that
-  version if your computer does not have it. CI tests on Python 3.12, 3.13 and
-  3.14.
+  version if your computer does not have it. CI tests on Python 3.12, 3.13,
+  3.14 and 3.15.
 - **uv:** to install the exact version CI uses on macOS or Linux, run
   `curl -LsSf https://astral.sh/uv/0.13.8/install.sh | sh`.
 - **make:** on macOS, `xcode-select --install` installs it. On Linux, use your
@@ -214,8 +214,8 @@ A few checks run only in CI.
 | pre-commit hooks | File hygiene (whitespace, line endings, valid YAML and TOML, no large files, executable scripts), secrets (detect-secrets and detect-private-key), ShellCheck for the shell scripts, zizmor for the security of the GitHub Actions files, and the JSON schemas of the workflow, action and Dependabot files | Runs on each `git commit`. To check every file: `cd backend && uv run pre-commit run --all-files` | A hook fixed a file for you: `git add` it and commit again. Or it found something that looks like a secret: remove it. If a real key was committed, follow [SECURITY.md](SECURITY.md#if-a-key-leaks). For ShellCheck and zizmor, the message names a rule and links to its explanation. |
 | Docker image | The image builds. A smoke test starts it, waits for its health check, checks that the app runs as an ordinary user who cannot change the installed code, uploads the sample CSV, runs a query, and runs Python in the sandbox | `make docker smoke` (needs Docker) | The Dockerfile or the app's startup is broken. A common cause: the app imports a package that is only in the `dev` group, which the image does not install. The job prints the container's log. |
 
-CI runs the tests on Python 3.12, 3.13 and 3.14. Locally, `make test` uses the
-version in `backend/.python-version`.
+CI runs the tests on Python 3.12, 3.13, 3.14 and 3.15. Locally, `make test` uses
+the version in `backend/.python-version`.
 
 CI also has a job called **All checks passed**, which passes only when every
 other CI job passed. Branch protection on `main` should require that one check,

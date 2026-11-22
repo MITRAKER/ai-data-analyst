@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/codeql.yml)
-[![Python 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776ab)](backend/pyproject.toml)
+[![Python 3.12 | 3.13 | 3.14 | 3.15](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14%20%7C%203.15-3776ab)](backend/pyproject.toml)
 [![NASA/JPL Power of Ten](https://img.shields.io/badge/NASA%2FJPL-Power%20of%20Ten-0b3d91)](docs/CODING_STANDARD.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -90,9 +90,9 @@ Every pull request has to pass these checks before it is merged:
   [our own checker](backend/tools/power_of_ten.py): no recursion, bounded loops
   and memory, short functions, runtime checks instead of `assert`, and more. See
   [docs/CODING_STANDARD.md](docs/CODING_STANDARD.md)
-- **pytest** on Python 3.12, 3.13 and 3.14, with warnings as errors and at least
-  95% branch coverage. The tests use a fake Claude client, so they need no API
-  key and cost nothing
+- **pytest** on Python 3.12, 3.13, 3.14 and 3.15, with warnings as errors and at
+  least 95% branch coverage. The tests use a fake Claude client, so they need no
+  API key and cost nothing
 - **pip-audit** for known vulnerabilities in the locked dependencies
 - **pre-commit** hooks: secrets, file hygiene, ShellCheck, and zizmor for the
   GitHub Actions workflows
