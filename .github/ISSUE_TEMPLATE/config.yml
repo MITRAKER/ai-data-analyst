@@ -1,0 +1,15 @@
+# Settings for the "New issue" page, where people choose a form.
+# Docs: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+
+# Every issue must start from one of the forms in this folder (bug report or
+# feature request). Forms ask for the details we need to help.
+blank_issues_enabled: false
+
+# Extra links shown on the same page, below the forms.
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/MITRAKER/ai-data-analyst/security/advisories/new
+    about: Report security problems privately. Please do not open a public issue for them.
+  - name: Learning guide
+    url: https://github.com/MITRAKER/ai-data-analyst/blob/main/LEARNING.md
+    about: Step-by-step lessons on how this project is built and why.

@@ -1,0 +1,10 @@
+# CODEOWNERS tells GitHub who is responsible for which files.
+#
+# When a pull request changes a file, GitHub asks that file's owners to review
+# it. Each line below is a file pattern followed by one or more GitHub users or
+# teams. If several lines match a file, the last matching line wins.
+#
+# "*" matches every file, so the maintainer is asked to review every pull request.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+* @MITRAKER

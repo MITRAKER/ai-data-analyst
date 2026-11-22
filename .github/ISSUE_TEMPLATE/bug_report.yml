@@ -1,0 +1,84 @@
+# A GitHub issue form. GitHub shows the fields below as a web form on the
+# "New issue" page, and turns the answers into the text of the new issue.
+# Docs: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms
+name: Bug report
+description: Something does not work the way it should.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Clear steps to reproduce it are the most helpful part of a report.
+
+        **Is this a security problem?** Please do not report it here, because issues are public. Use [private vulnerability reporting](https://github.com/MITRAKER/ai-data-analyst/security/advisories/new) instead. [SECURITY.md](https://github.com/MITRAKER/ai-data-analyst/blob/main/SECURITY.md) explains how.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem in a few sentences. Mention your operating system and Python version if they might matter.
+      placeholder: When I upload a CSV file whose first column has no name, the upload fails with a 400 error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact steps, commands or requests, so that someone else can see the same problem.
+      placeholder: |
+        1. Run `make run`.
+        2. Upload data/sample_sales.csv with POST /datasets.
+        3. Send POST /query with: SELECT region, SUM(revenue) FROM sample_sales GROUP BY 1
+        4. See the error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+      placeholder: The query returns one row per region.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release you use (for example 0.1.0), or the commit you ran. `git rev-parse --short HEAD` prints the commit.
+      placeholder: 0.1.0 or 1a2b3c4
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it happen?
+      description: Pick the part of the project that fits best.
+      options:
+        - Backend API
+        - AI agent / tools
+        - Python sandbox
+        - Data loading / SQL
+        - Chat UI (planned)
+        - Docs
+        - CI/CD
+        - Other
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste error messages or log lines here. They are shown as code, so you do not need backticks. Remove API keys and personal data first.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: I removed any API keys or personal data from this report
+          required: true

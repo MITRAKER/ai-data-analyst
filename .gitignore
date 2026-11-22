@@ -1,9 +1,28 @@
+# Python
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches and reports
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local settings and data: never commit them
 .env
 *.duckdb
 *.duckdb.wal
+
+# Charts that the terminal CLI saves
+chart_*.json
+
+# Frontend (step 3)
 node_modules/
 .next/

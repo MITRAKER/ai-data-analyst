@@ -1,0 +1,634 @@
+"""Tests for the tools, the chart builder and the Python sandbox."""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from app.agent import sandbox
+from app.agent.charts import ChartError, ChartRequest, build_plotly_spec, parse_chart_type
+from app.agent.sandbox import (
+    SandboxError,
+    SandboxLimits,
+    check_code,
+    run_python,
+)
+from app.agent.tools import (
+    MAX_INPUT_CHARS,
+    ToolExecutor,
+    ToolOutcome,
+    limit_content,
+    text_input,
+    tool_definitions,
+)
+from app.datastore import DataStore
+from app.invariants import InvariantError
+
+# ---------- tool definitions and inputs ----------
+
+
+def test_tool_definitions_are_strict_and_complete() -> None:
+    tools = tool_definitions()
+    assert [t["name"] for t in tools] == ["query_database", "run_python", "make_chart"]
+    for tool in tools:
+        assert tool.get("strict") is True
+        schema = tool["input_schema"]
+        assert isinstance(schema, dict)
+        properties = schema.get("properties")
+        assert isinstance(properties, dict)
+        assert schema.get("required") == list(properties)
+        assert schema.get("additionalProperties") is False
+
+
+def test_text_input_checks_type_and_length() -> None:
+    assert text_input({"sql": "SELECT 1"}, "sql") == "SELECT 1"
+    with pytest.raises(ValueError, match="must be a string"):
+        _ = text_input({"sql": 1}, "sql")
+    with pytest.raises(ValueError, match="must be a string"):
+        _ = text_input({}, "sql")
+    with pytest.raises(ValueError, match="longer than"):
+        _ = text_input({"sql": "x" * (MAX_INPUT_CHARS + 1)}, "sql")
+
+
+# ---------- the executor ----------
+
+
+def test_query_tool_truncates_and_says_so(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "query_database", {"sql": "SELECT * FROM sales", "purpose": ""}
+    )
+    assert out.is_error is False
+    payload = json.loads(out.content)
+    assert payload["row_count"] == 100
+    assert payload["truncated"] is True
+    assert "Only the first 100 rows" in payload["note"]
+
+
+def test_run_python_tool(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "run_python",
+        {
+            "sql": "SELECT quantity, revenue FROM sales",
+            "code": "print(round(df['quantity'].corr(df['revenue']), 2) > 0)",
+            "purpose": "correlation",
+        },
+    )
+    assert out.is_error is False
+    assert out.content.strip() == "True"
+    assert out.display == {"ok": True, "stdout": "True\n", "error": None}
+
+
+def test_run_python_tool_reports_errors(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "run_python", {"sql": "SELECT 1 AS a", "code": "print('hi')\nprint(1/0)", "purpose": ""}
+    )
+    assert out.is_error is True
+    assert out.content.startswith("hi\nERROR:")
+    assert "ZeroDivisionError" in out.content
+
+
+def test_run_python_tool_notes_truncated_data(
+    store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.agent.tools.MAX_ROWS_FOR_CODE", 10)
+    out = ToolExecutor(store).execute(
+        "run_python", {"sql": "SELECT * FROM sales", "code": "print(len(df))", "purpose": ""}
+    )
+    assert out.content == "10\n\n(note: df was limited to the first 10 rows)"
+
+
+def test_sandbox_rejection_is_a_tool_error(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "run_python", {"sql": "SELECT 1", "code": "import os", "purpose": ""}
+    )
+    assert out.is_error is True
+    assert "not allowed" in out.content
+
+
+def test_chart_tool(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "make_chart",
+        {
+            "sql": (
+                "SELECT region, channel, SUM(revenue) AS r FROM sales GROUP BY ALL ORDER BY 1, 2"
+            ),
+            "chart_type": "bar",
+            "x": "region",
+            "y": "r",
+            "color": "channel",
+            "title": "Revenue",
+        },
+    )
+    assert out.is_error is False
+    assert out.chart is not None
+    assert out.chart["layout"].get("barmode") == "group"
+    assert "created with 12 rows" in out.content
+
+
+def test_chart_with_missing_column(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "make_chart",
+        {
+            "sql": "SELECT region FROM sales",
+            "chart_type": "bar",
+            "x": "region",
+            "y": "nope",
+            "color": "",
+            "title": "t",
+        },
+    )
+    assert out.is_error
+    assert "nope" in out.content
+
+
+def test_chart_with_bad_type(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "make_chart",
+        {
+            "sql": "SELECT 1 AS a",
+            "chart_type": "radar",
+            "x": "a",
+            "y": "a",
+            "color": "",
+            "title": "",
+        },
+    )
+    assert out.is_error
+    assert "Unknown chart type" in out.content
+
+
+def test_chart_tool_notes_truncated_data(store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.agent.tools.MAX_CHART_POINTS", 5)
+    out = ToolExecutor(store).execute(
+        "make_chart",
+        {
+            "sql": "SELECT order_id, revenue FROM sales",
+            "chart_type": "scatter",
+            "x": "order_id",
+            "y": "revenue",
+            "color": "",
+            "title": "t",
+        },
+    )
+    assert "truncated to the first 5 rows" in out.content
+
+
+def test_unknown_tool(store: DataStore) -> None:
+    out = ToolExecutor(store).execute("rm_rf", {})
+    assert out.is_error
+    assert out.content == "Unknown tool: rm_rf"
+
+
+def test_unexpected_failure_is_contained(store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(DataStore, "run_query", broken)
+    out = ToolExecutor(store).execute("query_database", {"sql": "SELECT 1", "purpose": ""})
+    assert out.is_error
+    assert out.content == "Internal error in tool query_database. Try another approach."
+
+
+# ---------- charts ----------
+
+
+def chart(chart_type: str, x: str, y: str = "", color: str = "") -> ChartRequest:
+    return ChartRequest(chart_type=parse_chart_type(chart_type), x=x, y=y, color=color, title="T")
+
+
+def test_line_chart_split_by_color() -> None:
+    df = pd.DataFrame(
+        {
+            "m": pd.to_datetime(["2025-01-01", "2025-02-01"] * 2),
+            "r": [1, 2, 3, 4],
+            "g": ["a", "a", "b", "b"],
+        }
+    )
+    spec = build_plotly_spec(df, chart("line", "m", "r", "g"))
+    assert [t.get("name") for t in spec["data"]] == ["a", "b"]
+    assert spec["data"][0].get("x") == ["2025-01-01", "2025-02-01"]
+    assert spec["data"][0].get("mode") == "lines+markers"
+    assert spec["layout"]["title"] == {"text": "T"}
+
+
+def test_dates_keep_their_time_of_day() -> None:
+    df = pd.DataFrame({"t": pd.to_datetime(["2025-01-01 10:30", "2025-01-01 11:00"]), "v": [1, 2]})
+    spec = build_plotly_spec(df, chart("scatter", "t", "v"))
+    assert spec["data"][0].get("x") == ["2025-01-01T10:30:00", "2025-01-01T11:00:00"]
+    assert spec["data"][0].get("mode") == "markers"
+
+
+def test_pie_and_histogram() -> None:
+    df = pd.DataFrame({"k": ["a", "b"], "v": [1.5, None]})
+    pie = build_plotly_spec(df, chart("pie", "k", "v"))
+    assert pie["data"] == [{"type": "pie", "labels": ["a", "b"], "values": [1.5, None]}]
+    assert "xaxis" not in pie["layout"]
+    hist = build_plotly_spec(df, chart("histogram", "v"))
+    assert hist["data"] == [{"type": "histogram", "x": [1.5, None]}]
+    assert hist["layout"].get("yaxis") == {"title": {"text": "count"}}
+
+
+def test_missing_color_values_get_a_label() -> None:
+    df = pd.DataFrame({"x": [1, 2], "y": [3, 4], "g": ["a", None]})
+    spec = build_plotly_spec(df, chart("bar", "x", "y", "g"))
+    assert [t.get("name") for t in spec["data"]] == ["a", "(missing)"]
+
+
+def test_too_many_series() -> None:
+    df = pd.DataFrame({"x": range(30), "y": range(30), "g": [str(i) for i in range(30)]})
+    with pytest.raises(ChartError, match="at most 25 series"):
+        _ = build_plotly_spec(df, chart("bar", "x", "y", "g"))
+
+
+def test_columns_must_be_checked_first() -> None:
+    df = pd.DataFrame({"x": [1]})
+    with pytest.raises(InvariantError):
+        _ = build_plotly_spec(df, chart("bar", "x", "missing"))
+
+
+def test_unknown_chart_type() -> None:
+    with pytest.raises(ChartError):
+        _ = parse_chart_type("radar")
+
+
+# ---------- sandbox: static check ----------
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os",
+        "import subprocess",
+        "from socket import socket",
+        "from . import x",
+        "open('/etc/passwd')",
+        "__import__('os')",
+        "eval('1')",
+        "df.to_csv('x')",
+        "().__class__.__bases__",
+        "getattr(df, 'to_csv')",
+        "df._mgr",
+        "pd.io.common",
+        "np.load('x.npy')",
+        "df.query('a > 1')",
+        "x = '{0.__class__}'.format(df)",
+        "print(__builtins__)",
+        "def f(:\n  pass",
+        "x = 1\n" * 10_001,
+        # Names imported from allowed modules follow the attribute rules.
+        "from random import _os",
+        "from collections import _sys",
+        "from pandas import read_csv",
+        "from numpy import load",
+        "from pandas import *",
+        # So do the parts of a dotted import.
+        "import numpy.lib as lib",
+        "from numpy.lib import npyio",
+        "import pandas._libs",
+        # Doors to the interpreter: built-ins through modules, and frames.
+        "import re\nre.enum.bltns.exec('1')",
+        "g = (x for x in [])\nprint(g.gi_frame.f_builtins)",
+    ],
+)
+def test_sandbox_blocks(code: str) -> None:
+    with pytest.raises(SandboxError):
+        check_code(code)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import pandas as pd\nimport numpy as np",
+        "from collections import Counter",
+        "import numpy.linalg",
+        "print(df.groupby('a')['b'].agg(['sum', 'mean']))",
+        "x = [i * 2 for i in range(10)]",
+        "from collections import Counter, defaultdict",
+        "from datetime import datetime, timedelta",
+        "import numpy.linalg as la",
+        "import re\nprint(re.compile(r'[0-9]+').findall('a1b22'))",
+    ],
+)
+def test_sandbox_allows_ordinary_analysis(code: str) -> None:
+    check_code(code)
+
+
+# ---------- sandbox: running code ----------
+
+
+def test_sandbox_runs_and_returns_output() -> None:
+    df = pd.DataFrame({"a": [1, 2, 3]})
+    result = run_python("import json, statistics\nprint(json.dumps(statistics.mean(df['a'])))", df)
+    assert result.ok
+    assert result.stdout == "2\n"
+
+
+def test_sandbox_without_output_says_so() -> None:
+    result = run_python("x = 1", pd.DataFrame())
+    assert result.ok
+    assert "use print()" in result.stdout
+
+
+def test_sandbox_error_keeps_printed_output() -> None:
+    result = run_python("print('before')\nprint(1/0)", pd.DataFrame({"a": [1]}))
+    assert not result.ok
+    assert result.stdout == "before"
+    assert result.error is not None
+    assert 'File "user_code.py", line 2' in result.error
+    assert result.error.endswith("ZeroDivisionError: division by zero")
+    assert "runner.py" not in result.error
+
+
+def test_sandbox_timeout() -> None:
+    limits = SandboxLimits(timeout_s=1, cpu_s=30)
+    code = "import itertools\nfor _ in itertools.count():\n    pass"
+    result = run_python(code, pd.DataFrame({"a": [1]}), limits)
+    assert result.error == "Timed out after 1s."
+
+
+def test_sandbox_cpu_limit() -> None:
+    limits = SandboxLimits(timeout_s=20, cpu_s=1)
+    result = run_python("x = 0\nfor i in range(10**10):\n    x += i", pd.DataFrame(), limits)
+    assert result.error == "Stopped: used more than 1s of CPU time."
+
+
+def test_sandbox_memory_limit() -> None:
+    limits = SandboxLimits(memory_mb=512)
+    result = run_python("a = np.ones((100, 1000, 1000))\nprint(a.sum())", pd.DataFrame(), limits)
+    assert not result.ok
+    assert result.error is not None
+    assert "out of memory" in result.error
+
+
+def test_sandbox_output_limit() -> None:
+    limits = SandboxLimits(output_bytes=1000)
+    result = run_python("print('x' * 5000)", pd.DataFrame(), limits)
+    assert result.error == "Too much output: print less."
+    assert len(result.stdout) == 1000
+
+
+def test_sandbox_long_output_is_truncated() -> None:
+    result = run_python("print('y' * 9000)", pd.DataFrame())
+    assert result.ok
+    assert "output truncated, 9,001 characters total" in result.stdout
+
+
+def test_sandbox_cannot_write_or_open_files(tmp_path: Path) -> None:
+    target = tmp_path / "precious.txt"
+    _ = target.write_text("keep me", encoding="utf-8")
+    # String dispatch gets past the syntax check, so the OS limits must stop it.
+    code = f"df.agg('to_string', buf={str(target)!r})"
+    result = run_python(code, pd.DataFrame({"a": [1]}))
+    assert not result.ok
+    assert result.error is not None
+    assert "no file or network access" in result.error
+    assert target.read_text(encoding="utf-8") == "keep me"
+
+
+# ---------- sandbox: the layers behind the static check ----------
+# Python is too flexible for the static check to catch everything, so these
+# tests run code that it would reject and check that the child process still
+# cannot reach outside itself.
+
+
+def test_sandbox_still_works_for_analysis() -> None:
+    df = pd.DataFrame({"region": ["N", "S"] * 50, "revenue": range(100)})
+    code = (
+        "print(df.groupby('region')['revenue'].sum().to_dict())\n"
+        "print(next(df.itertuples()).region)\n"
+        "print(np.linalg.inv(np.eye(50)).trace())"
+    )
+    result = run_python(code, df)
+    assert result.ok, result.error
+    assert result.stdout == "{'N': 2450, 'S': 2500}\nN\n50.0\n"
+
+
+def test_sandbox_cannot_open_a_file_after_closing_one(tmp_path: Path) -> None:
+    planted = tmp_path / "planted.txt"
+    _ = planted.write_text("PLANTED-TEXT-FOR-THE-TEST", encoding="utf-8")
+    # Closing stdin frees descriptor 0, which used to let the next open() succeed.
+    code = f"import os\nos.close(0)\nprint(os.read(os.open({str(planted)!r}, 0), 100))"
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert "PLANTED-TEXT" not in result.stdout
+    assert result.error is not None
+    assert "Not allowed in the sandbox: open" in result.error
+    assert "no file or network access" in result.error
+
+
+@pytest.mark.parametrize(
+    ("code", "action"),
+    [
+        ("import os\nos.kill(os.getppid(), 0)", "os.kill"),
+        ("import os\nos.fork()", "os.fork"),
+        ("import os\nos.system('true')", "os.system"),
+        # A subinterpreter would run code without the audit hook. The sandbox never
+        # loads the module that creates them, and refuses to load it later.
+        ("import _interpreters", "import"),
+        ("import sys\ndel sys.modules['_interpreters']\nimport _interpreters", "import"),
+        (
+            (
+                "import _imp\n"
+                "class Spec:\n"
+                "    name = 'any._interpreters'\n"
+                "    origin = ''\n"
+                "_imp.create_dynamic(Spec)"
+            ),
+            "import",
+        ),
+        # Python 3.14 can ask another Python process, such as the server, to run a
+        # script (this code asks its own process), and its _remote_debugging module
+        # reads the memory of other processes.
+        pytest.param(
+            "import os, sys\nsys.remote_exec(os.getpid(), 'user_code.py')",
+            "sys.remote_exec",
+            marks=pytest.mark.skipif(sys.version_info < (3, 14), reason="new in Python 3.14"),
+        ),
+        ("import _remote_debugging", "import"),
+        ("import ctypes\nctypes.CDLL(None)", "ctypes.dlopen"),
+        ("import socket", "import"),
+        (
+            "import resource\nresource.setrlimit(resource.RLIMIT_CPU, (100, 100))",
+            "resource.setrlimit",
+        ),
+        (
+            (
+                "import sys\n"
+                "def nothing(event, args): pass\n"
+                "sys._getframe(1).f_globals['audit'].__code__ = nothing.__code__"
+            ),
+            "object.__setattr__",
+        ),
+        (
+            "import sys\nsys._getframe(1).f_globals['audit'].__defaults__ = (print, str)",
+            "object.__setattr__",
+        ),
+        ("import sys\ndel sys._getframe(1).f_globals['audit'].__defaults__", "object.__delattr__"),
+    ],
+)
+def test_sandbox_blocks_actions_that_leave_the_process(code: str, action: str) -> None:
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.error is not None
+    assert f"Not allowed in the sandbox: {action}" in result.error
+
+
+@pytest.mark.parametrize("name", ["_interpreters", "_testinternalcapi"])
+def test_sandbox_makes_no_new_modules(name: str) -> None:
+    # Some Python builds compile these modules in, and _imp.create_builtin()
+    # makes them without the import event that the audit hook checks.
+    code = f"import _imp\nclass Spec:\n    name = {name!r}\nprint(_imp.create_builtin(Spec))"
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.error is not None
+    assert f"No new modules can be loaded in the sandbox: {name}" in result.error
+
+
+@pytest.mark.parametrize(
+    ("code", "ok", "error"),
+    [
+        ("print('done')\nraise SystemExit", True, None),
+        ("raise SystemExit(0)", True, None),
+        ("raise SystemExit(3)", False, "The code failed."),
+        ("raise SystemExit(256)", False, "The code failed."),  # the OS would cut 256 to 0
+        ("raise SystemExit(2 ** 100)", False, "The code failed."),
+        ("raise SystemExit('stopped early')", False, "stopped early"),
+    ],
+)
+def test_sandbox_reports_sys_exit_like_python(code: str, ok: bool, error: str | None) -> None:
+    result = run_python(code, pd.DataFrame())
+    assert result.ok is ok
+    assert result.error == error
+
+
+# Python removes the audit hook while it shuts down, and an object it frees
+# after that runs its __del__ method without the hook. This object waits in the
+# list of functions for os.fork(), which Python frees after the hook is gone.
+_RUNS_AFTER_THE_HOOK = (
+    "import os\n"
+    "class Escape:\n"
+    "    def __del__(self, kill=os.kill, getppid=os.getppid, write=os.write):\n"
+    "        kill(getppid(), 0)\n"
+    "        write(1, b'ESCAPED')\n"
+    "    def before(self):\n"
+    "        pass\n"
+    "os.register_at_fork(before=Escape().before)\n"
+    "print('registered')\n"
+)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "",
+        # Code that also breaks the sandbox's own way out still cannot get there.
+        "import os\nos._exit = lambda status: None\n",
+    ],
+)
+def test_sandbox_runs_no_code_after_the_audit_hook_is_removed(tamper: str) -> None:
+    code = tamper + _RUNS_AFTER_THE_HOOK
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    output = result.stdout + (result.error or "")
+    assert "registered" in output
+    assert "ESCAPED" not in output
+
+
+def test_sandbox_hook_cannot_be_switched_off_by_changing_variables(tmp_path: Path) -> None:
+    planted = tmp_path / "planted.txt"
+    _ = planted.write_text("PLANTED-TEXT-FOR-THE-TEST", encoding="utf-8")
+    # The hook keeps what it uses in its own default arguments, not in variables.
+    code = (
+        "import builtins, sys\n"
+        "sys._getframe(1).f_globals['PermissionError'] = None\n"
+        "builtins.PermissionError = None\n"
+        f"print(open({str(planted)!r}).read())"
+    )
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert "PLANTED-TEXT" not in result.stdout
+    assert result.error is not None
+    assert "Not allowed in the sandbox: open" in result.error
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="the root user is exempt from the process limit")
+def test_sandbox_cannot_start_threads_or_processes() -> None:
+    code = "import threading\nthreading.Thread(target=print).start()"
+    result = sandbox._run_unchecked(code, pd.DataFrame(), SandboxLimits())
+    assert not result.ok
+    assert result.error is not None
+    assert "can't start new thread" in result.error
+
+
+def test_sandbox_error_without_traceback() -> None:
+    printed, error = sandbox._split_traceback("some output\nKilled")
+    assert (printed, error) == ("", "some output\nKilled")
+    assert sandbox._split_traceback("") == ("", "The code failed.")
+
+
+def test_signal_messages() -> None:
+    limits = SandboxLimits()
+    assert "CPU time" in sandbox._signal_message(-signal.SIGXCPU, limits)
+    assert "memory or CPU" in sandbox._signal_message(-signal.SIGKILL, limits)
+    assert (
+        sandbox._signal_message(-signal.SIGSEGV, limits) == f"Stopped by signal {signal.SIGSEGV}."
+    )
+
+
+def test_sandbox_refuses_to_run_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+    with pytest.raises(SandboxError, match="Linux or macOS"):
+        _ = run_python("print(1)", pd.DataFrame())
+
+
+def test_chart_requests_name_their_columns() -> None:
+    with pytest.raises(ChartError, match="`x` must name a column"):
+        _ = chart("bar", "")
+    with pytest.raises(ChartError, match="A bar chart needs `y`"):
+        _ = chart("bar", "region")
+    assert chart("histogram", "revenue").needed_columns() == ["revenue"]
+
+
+def test_chart_tool_explains_a_missing_y(store: DataStore) -> None:
+    out = ToolExecutor(store).execute(
+        "make_chart",
+        {"sql": "SELECT 1 AS a", "chart_type": "line", "x": "a", "y": "", "color": "", "title": ""},
+    )
+    assert out.is_error is True
+    assert "needs `y`" in out.content
+
+
+def test_long_tool_results_are_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.agent.tools.MAX_RESULT_CHARS", 10)
+    short = ToolOutcome("0123456789")
+    assert limit_content(short) is short
+    cut = limit_content(ToolOutcome("0123456789abc", is_error=True))
+    assert cut.content.startswith("0123456789\n[result cut to the first 10 of 13 characters.")
+    assert cut.is_error is True
+
+
+def test_long_query_results_reach_claude_cut(
+    store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.agent.tools.MAX_RESULT_CHARS", 100)
+    out = ToolExecutor(store).execute("query_database", {"sql": "SELECT * FROM sales"})
+    assert "[result cut to the first 100 of" in out.content
+    result = out.display["result"]
+    assert isinstance(result, dict)
+    assert len(result["rows"]) == 100
+
+
+@pytest.mark.parametrize("field", ["timeout_s", "cpu_s", "memory_mb", "output_bytes"])
+def test_sandbox_limits_must_be_positive(field: str) -> None:
+    with pytest.raises(InvariantError, match=f"{field} must be positive"):
+        _ = SandboxLimits(**{field: 0})
+
+
+def test_signal_message_needs_a_signal() -> None:
+    with pytest.raises(InvariantError, match="negative"):
+        _ = sandbox._signal_message(1, SandboxLimits())

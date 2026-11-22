@@ -8,9 +8,12 @@ type. The database knows its grammar better than any regex we could write.
 
 from __future__ import annotations
 
+from typing import Final
+
 import duckdb
 
-ALLOWED = {duckdb.StatementType.SELECT}
+ALLOWED: Final = frozenset({duckdb.StatementType.SELECT})
+MAX_SQL_CHARS: Final = 20_000  # far longer than any useful query
 
 
 class UnsafeSQLError(ValueError):
@@ -18,18 +21,30 @@ class UnsafeSQLError(ValueError):
 
 
 def ensure_read_only(sql: str) -> str:
-    """Return the cleaned SQL if it is exactly one SELECT statement, else raise."""
-    sql = (sql or "").strip().rstrip(";").strip()
-    if not sql:
+    """Check that `sql` is exactly one SELECT statement.
+
+    Args:
+        sql: SQL text from a user or from the AI model.
+
+    Returns:
+        The SQL with surrounding whitespace and trailing semicolons removed.
+
+    Raises:
+        UnsafeSQLError: If the SQL is empty, too long, unparsable, more than one
+            statement, or not a SELECT.
+    """
+    if len(sql) > MAX_SQL_CHARS:
+        raise UnsafeSQLError(f"SQL is longer than {MAX_SQL_CHARS:,} characters.")
+    cleaned = sql.strip().rstrip(";").strip()
+    if not cleaned:
         raise UnsafeSQLError("Empty SQL.")
     try:
-        statements = duckdb.extract_statements(sql)
+        statements = duckdb.extract_statements(cleaned)
     except duckdb.Error as exc:
         raise UnsafeSQLError(f"SQL could not be parsed: {exc}") from exc
     if len(statements) != 1:
         raise UnsafeSQLError("Only one SQL statement is allowed at a time.")
-    if statements[0].type not in ALLOWED:
-        raise UnsafeSQLError(
-            f"Only read-only SELECT queries are allowed (got {statements[0].type.name})."
-        )
-    return sql
+    kind = statements[0].type
+    if kind not in ALLOWED:
+        raise UnsafeSQLError(f"Only read-only SELECT queries are allowed (got {kind.name}).")
+    return cleaned
