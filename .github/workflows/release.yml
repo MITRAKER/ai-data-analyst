@@ -43,7 +43,7 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Check out the code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Compare the tag with the code and the changelog
@@ -93,7 +93,7 @@ jobs:
       contents: write # create the release
     steps:
       - name: Check out the code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Write the release notes from CHANGELOG.md
@@ -125,7 +125,7 @@ jobs:
       packages: write # push the image to ghcr.io
     steps:
       - name: Check out the code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       # The runner is an Intel/AMD (x86-64) machine. QEMU emulates an ARM CPU,
