@@ -42,14 +42,16 @@ Where things are:
 | `backend/tests/` | The tests |
 | `backend/tools/power_of_ten.py` | Our checker for the Power of Ten rules |
 | `backend/pyproject.toml`, `backend/uv.lock` | The dependencies, their exact locked versions, and the settings of the Python tools |
+| `frontend/src/` | The web UI (Next.js and TypeScript): the page, its components, and the server routes in `src/app/api/` that pass requests on to the API |
+| `frontend/src/**/*.test.ts(x)`, `frontend/e2e/` | The web UI's unit and component tests (Vitest), and its browser tests (Playwright) |
+| `frontend/package.json`, `frontend/package-lock.json` | The web UI's packages and their exact locked versions |
+| `compose.yaml` | Docker Compose: the web UI and the API together |
 | `data/sample_sales.csv` | A sample dataset to try things with |
 | `docs/CODING_STANDARD.md` | The coding standard |
-| `scripts/` | Shell scripts: the Docker smoke test and the release-notes helper |
+| `scripts/` | Shell scripts: the smoke tests for the Docker image and for Docker Compose, and the release-notes helper |
 | `.github/` | The CI, release and CodeQL workflows, Dependabot, and the issue and pull request templates |
 | `Makefile` | The short commands, such as `make check` (run `make` to list them) |
 | `LEARNING.md` | One lesson for each build step |
-
-A Next.js chat UI is planned, but it does not exist yet.
 
 ## Prerequisites
 
@@ -59,7 +61,8 @@ A Next.js chat UI is planned, but it does not exist yet.
 | [Python](https://www.python.org/downloads/) | 3.12 or newer | The backend's language. uv can install it for you |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | A recent version. CI and Docker use 0.13.8 | Installs the packages and runs the tools |
 | make | Any | Runs the short commands in the `Makefile`, such as `make check` |
-| [Docker](https://docs.docker.com/get-started/get-docker/) | Optional | Only for building the container image with `make docker` |
+| [Node.js](https://nodejs.org/) | 26, the version in `frontend/.nvmrc` (24.15 or newer works) | Only for the web UI. npm comes with it |
+| [Docker](https://docs.docker.com/get-started/get-docker/) | Optional | Only for the container images and Docker Compose (`make docker`, `make up`) |
 
 Some tips:
 
@@ -71,6 +74,9 @@ Some tips:
 - **make:** on macOS, `xcode-select --install` installs it. On Linux, use your
   package manager, for example `sudo apt install make`. On Windows, use WSL (the
   Windows Subsystem for Linux) and run every command inside it.
+- **Node.js:** a version manager such as [nvm](https://github.com/nvm-sh/nvm)
+  or [fnm](https://github.com/Schniz/fnm) reads `frontend/.nvmrc` and installs
+  that version: run `nvm install` (or `fnm use`) inside `frontend/`.
 - **An Anthropic API key** is optional. You only need one to run the real agent
   with `POST /ask` or the terminal CLI. The tests never use it.
 
@@ -109,6 +115,19 @@ the server with Ctrl+C.
 
 `.env` is ignored by git, so your key stays on your computer. Never commit it.
 
+To work on the web UI, install its packages too, and start it while the API
+runs:
+
+```bash
+make web-setup   # npm ci: the exact versions in frontend/package-lock.json
+make web-check   # runs every web UI check that CI runs, except the browser tests
+make web-dev     # starts the web UI on http://localhost:3000, with hot reload
+```
+
+`frontend/.npmrc` turns off install scripts, so no package can run code on your
+computer while it is installed. For the browser tests, install Chromium once
+with `cd frontend && npx playwright install chromium`, then run `make web-e2e`.
+
 To run any tool inside the project's environment, use `uv run` from the
 `backend/` folder, for example `cd backend && uv run pytest`.
 
@@ -120,6 +139,7 @@ git switch -c fix/empty-csv-upload          # 2. create a branch
                                             # 3. make your change, with tests
 make format                                 # 4. fix what can be fixed automatically,
 make check                                  #    then run every backend check
+                                            #    (make web-check for the web UI)
 git status                                  # 5. see what changed
 git add <the files you changed>
 git commit -m "fix: reject CSV files that have no rows"
@@ -137,7 +157,9 @@ Step by step:
 3. **Make your change.** Keep each pull request to one topic. Add or update tests
    with every code change.
 4. **Run the checks.** `make format` fixes what can be fixed automatically, such
-   as formatting. `make check` runs everything CI runs on the backend.
+   as formatting. `make check` runs everything CI runs on the backend. For the
+   web UI, `cd frontend && npm run format` fixes the formatting, and
+   `make web-check` runs its checks.
 5. **Commit** with a [Conventional Commit](#commit-messages) message. The
    pre-commit hooks run at this point. If a hook fails, the commit does not
    happen: fix the problem, `git add` the files again and commit again. If a hook
@@ -210,9 +232,16 @@ A few checks run only in CI.
 | Power of Ten checker | The NASA/JPL Power of Ten rules, adapted to Python (see [Coding standard](#coding-standard)) | `make jpl` | The code breaks one of the rules, for example with a `while` loop, recursion or a function longer than 60 lines. [docs/CODING_STANDARD.md](docs/CODING_STANDARD.md) explains each rule. |
 | pytest + coverage | All tests pass, warnings count as errors, and branch coverage is at least 95% | `make test` | A test failed, the code raised a warning, or new code has no tests. The coverage report lists the lines that no test reached. |
 | pip-audit | Known vulnerabilities in the packages we depend on | `make security` (needs internet access) | A package we use has a published vulnerability. Upgrade it to a fixed version (see [Adding a dependency](#adding-a-dependency)). Often a Dependabot pull request already does this. |
-| CodeQL | Deep security analysis of the Python code and the GitHub Actions workflows | CI only, on every pull request and once a week | CodeQL found a path where untrusted input reaches something dangerous, or a risky workflow pattern. Open the alert to see the path and how to fix it. |
+| CodeQL | Deep security analysis of the Python code, the TypeScript code and the GitHub Actions workflows | CI only, on every pull request and once a week | CodeQL found a path where untrusted input reaches something dangerous, or a risky workflow pattern. Open the alert to see the path and how to fix it. |
 | pre-commit hooks | File hygiene (whitespace, line endings, valid YAML and TOML, no large files, executable scripts), secrets (detect-secrets and detect-private-key), ShellCheck for the shell scripts, zizmor for the security of the GitHub Actions files, and the JSON schemas of the workflow, action and Dependabot files | Runs on each `git commit`. To check every file: `cd backend && uv run pre-commit run --all-files` | A hook fixed a file for you: `git add` it and commit again. Or it found something that looks like a secret: remove it. If a real key was committed, follow [SECURITY.md](SECURITY.md#if-a-key-leaks). For ShellCheck and zizmor, the message names a rule and links to its explanation. |
 | Docker image | The image builds. A smoke test starts it, waits for its health check, checks that the app runs as an ordinary user who cannot change the installed code, uploads the sample CSV, runs a query, and runs Python in the sandbox | `make docker smoke` (needs Docker) | The Dockerfile or the app's startup is broken. A common cause: the app imports a package that is only in the `dev` group, which the image does not install. The job prints the container's log. |
+| Prettier | One consistent layout for the web UI's code | `cd frontend && npm run format:check`; `npm run format` fixes it | The code was not formatted. Run `npm run format` in `frontend/` and commit the result. |
+| ESLint | Likely bugs, React and accessibility mistakes, and the Power of Ten rules for TypeScript, with `--max-warnings=0` | `cd frontend && npm run lint` | The message names a rule, such as `complexity` or `@typescript-eslint/no-floating-promises`. [docs/CODING_STANDARD.md](docs/CODING_STANDARD.md#the-web-ui-typescript) maps the rules. |
+| TypeScript | Strict types for all of the web UI's code | `cd frontend && npm run typecheck` | A value may be `undefined` or of another type than the code expects. Check it with code; never silence it with `as`. |
+| Vitest + coverage | The web UI's unit and component tests pass, with at least 95% coverage of lines, branches and functions | `cd frontend && npm run test:coverage` | A test failed, or new code has no tests. Open `frontend/coverage/index.html` to see what no test reached. |
+| Build and npm audit | The production build works; no locked package has a known vulnerability; every package carries the npm registry's signature | `cd frontend && npm run build && npm audit` | The build output names the file. For `npm audit`, upgrade the package (see [Adding a dependency](#adding-a-dependency)). |
+| Playwright | Browser tests in Chromium, on a desktop and a phone screen: asking, Stop, errors, uploads, security headers, and accessibility (axe) | `make web-e2e` (install Chromium first, see [First-time setup](#first-time-setup)) | The test's name says what broke. In CI, the report with a screenshot of each failure is attached to the run. axe names the accessibility rule and the element. |
+| Docker Compose | Both images build and work together: uploads through the web UI's server, the size limit, the missing-key message, the sandbox in the read-only API container, data kept across a restart, and that only the web UI can be reached | `make compose-smoke` (needs Docker) | The script prints the logs of both services. Check `compose.yaml` and the Dockerfiles. |
 
 CI runs the tests on Python 3.12, 3.13, 3.14 and 3.15. Locally, `make test` uses
 the version in `backend/.python-version`.
@@ -221,8 +250,10 @@ CI also has a job called **All checks passed**, which passes only when every
 other CI job passed. Branch protection on `main` should require that one check,
 plus CodeQL, instead of listing every job.
 
-One hook runs before each `git push` instead of each commit: the full test
-suite. So a push with failing tests stops on your computer, not in CI.
+Two hooks run before each `git push` instead of each commit: the backend's full
+test suite, and, when files in `frontend/` changed, every web UI check. So a
+push with failing tests stops on your computer, not in CI. The web UI's hooks
+use its packages, so run `make web-setup` before you change files there.
 
 ## Coding standard
 
@@ -267,6 +298,11 @@ The rules in short:
     errors, on every change and once a week. Every suppression comment gives a
     reason.
 
+The web UI follows the same ten rules in TypeScript, checked by ESLint and
+strict TypeScript. Two rules take a different form there: values from outside
+are checked by type guards instead of `require()`, and callbacks are allowed,
+because React is built on them.
+
 The full rules are in [docs/CODING_STANDARD.md](docs/CODING_STANDARD.md). That
 file is the source of truth; this list is only a summary.
 
@@ -304,6 +340,29 @@ uv run pytest -k sandbox --no-cov
 `--no-cov` turns off the coverage check, which only makes sense for the full test
 suite. Run `make test` before you push.
 
+### The web UI's tests
+
+- **Find elements the way people do.** Use Testing Library's `getByRole` and
+  `getByLabelText`, such as `getByRole("button", { name: "Stop" })`, not CSS
+  classes. A test that can't find a control by its name points to a control
+  that a screen reader can't name either.
+- **No real network.** Unit tests replace `fetch` with `vi.stubGlobal`; the
+  helpers in `frontend/src/test/fakes.ts` build fake responses and event
+  streams. The browser tests use `frontend/e2e/fake-api.mts` in place of the
+  Python API, so they need no key either.
+- **Test the pure logic directly.** The parser (`sse.ts`), the reducer
+  (`conversation.ts`) and the checks of every event (`events.ts`) are plain
+  functions: call them, and check the result.
+- **Every browser test fails on a console error**, and the main pages are
+  checked with axe. Add `expectAccessible(page)` to a new browser test that
+  shows something new.
+
+```bash
+cd frontend
+npx vitest src/lib/sse.test.ts       # one file, rerun on every change
+npx playwright test e2e/chat.spec.ts --project desktop   # one file, one screen size
+```
+
 ## Adding a dependency
 
 Every new package is code that we have to trust, keep up to date and ship in the
@@ -332,6 +391,19 @@ Other useful commands, run from `backend/`:
 - `uv remove <package>` removes a dependency.
 - `uv lock --upgrade-package <package>` upgrades one package to the newest version
   that `pyproject.toml` allows. Then `uv sync --all-groups` installs it.
+
+For the web UI, from `frontend/`:
+
+```bash
+npm install <package>              # needed by the app in the browser or on its server
+npm install --save-dev <package>   # only needed to develop or test
+```
+
+`frontend/.npmrc` makes npm save the exact version and run no install scripts.
+Commit `package-lock.json` together with `package.json`. Prefer a version that
+has been out for at least a week, for the same reason as Dependabot's cooldown
+(below). The Docker image installs every package to build the app, but ships
+only what the built server uses.
 
 Dependabot also opens pull requests every week to keep the dependencies up to
 date.

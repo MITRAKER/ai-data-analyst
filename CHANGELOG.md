@@ -18,10 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Developer tooling:** uv with a lockfile; a `Makefile` (`make check`, `make test`, `make run` and more); pre-commit hooks for file hygiene, secrets, ShellCheck, zizmor and the schemas of the GitHub files; EditorConfig.
 - **Docker image:** multi-stage build that runs as a non-root user who cannot change the installed code, with a health check and an optional `/data` volume for a DuckDB file that outlives the container.
 - **Documentation:** Lesson 3 in `LEARNING.md`; `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md`; issue and pull request templates; `CODEOWNERS`.
+- **Chat interface (step 3):** a Next.js web UI in `frontend/`. Upload a CSV and see its columns and first rows; ask a question and watch each step of the agent while it happens (its plan, the SQL and Python it runs, the result tables); see the answer with interactive Plotly charts; stop an answer with the Stop button. Light and dark mode, and a layout for phones.
+- **Streaming API:** `POST /ask/stream` sends each step of the agent as a Server-Sent Event while it happens, with a keep-alive ping; the agent stops after its current step when the client disconnects. `GET /agent/status` says whether the agent can answer, and why not.
+- **Web UI security:** the browser talks only to the web UI's own server, which passes on just the calls the page needs; a Content-Security-Policy with a new nonce for every page, and headers against framing and content sniffing; every response is checked at run time, and text from the agent is never inserted as HTML.
+- **Docker Compose:** `docker compose up --build` (or `make up`) runs the web UI and the API together. Only the web UI is published, on `127.0.0.1`; both containers are read-only, run as ordinary users and have no Linux capabilities. A smoke test checks all of this.
+- **Web UI checks in CI:** Prettier, ESLint with the Power of Ten rules for TypeScript, strict TypeScript, 131 unit and component tests with a 95% coverage gate, a production build, `npm audit` and npm's registry signatures; Playwright browser tests on a desktop and a phone screen, with axe accessibility checks; the Compose smoke test. CodeQL also scans the TypeScript code, Dependabot updates the npm packages and the Node.js image, and pre-commit runs Prettier and ESLint.
+- **Documentation:** Lesson 4 in `LEARNING.md`, and a TypeScript section in `docs/CODING_STANDARD.md`.
 
 ### Changed
 
 - Dependencies are managed with uv, in `backend/pyproject.toml` and `backend/uv.lock`, instead of `requirements.txt` files.
+- The API no longer sends CORS headers, and `CORS_ORIGINS` is gone from `.env.example`. Browsers reach the API only through the web UI's server, so it needs none.
 
 ### Fixed
 

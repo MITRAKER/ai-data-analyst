@@ -386,7 +386,7 @@ a good idea.
 ```
 you edit ──► git commit ──► git push ──► pull request ──► merge ──► git tag v0.2.0
                │              │             │                          │
-          pre-commit       pre-push:     CI (8 jobs)              release workflow:
+          pre-commit       pre-push:     CI (11 jobs)             release workflow:
           hooks, in        all tests     + CodeQL, in             CI again, GitHub Release,
           seconds                        minutes                  Docker image on ghcr.io
 ```
@@ -542,8 +542,8 @@ malicious code in one of those. The defenses:
   token has, and most jobs may only read. A job that must write gets only what it
   needs: CodeQL may upload its findings, and the release jobs may create the
   release and push the image.
-- **Few outside actions.** The workflows use only GitHub's own actions
-  (`actions/checkout`, `actions/setup-python` and CodeQL). Everything else is a
+- **Few outside actions.** The workflows use only GitHub's own actions (such as
+  `actions/checkout`, `actions/setup-python` and CodeQL). Everything else is a
   plain shell command we can read, except Docker's own build tools, which the
   release job runs as container images to build for ARM. The one that needs full
   rights on the runner is pinned to an exact build by its digest, the same way
@@ -652,8 +652,325 @@ exactly as CI does.
 - **Semantic Versioning:** `MAJOR.MINOR.PATCH`, where the number you bump says what kind of change it is.
 - **Smoke test:** a quick end-to-end check that the thing starts and basically works.
 
+---
+
+## Lesson 4: The chat interface (Next.js, live streaming, a safe web page)
+
+### What we built
+
+Step 3 gives the agent a face: a web page where you upload a CSV, ask a
+question, and watch the agent work, step by step, while it happens.
+
+| File | Job |
+|---|---|
+| `backend/app/main.py` | Two new endpoints: `POST /ask/stream` sends each step of the agent as it happens, and `GET /agent/status` says whether the agent can answer (is there an API key?) |
+| `frontend/src/app/` | The page, and the web UI's own server routes (`api/`), which pass the browser's requests on to the Python API |
+| `frontend/src/proxy.ts`, `src/lib/csp.ts` | A Content-Security-Policy with a new random nonce for every page |
+| `frontend/src/lib/` | The logic, without React: reading the stream (`sse.ts`), checking every event (`events.ts`), the state of the conversation (`conversation.ts`), and a safe Markdown renderer (`markdown.tsx`) |
+| `frontend/src/hooks/`, `src/components/` | React: the state of the page, and what it shows |
+| `frontend/src/**/*.test.ts(x)` | 131 unit and component tests (Vitest and Testing Library) |
+| `frontend/e2e/` | Browser tests (Playwright) on a desktop and a phone screen, with a stand-in for the Python API |
+| `frontend/eslint.config.mjs` | ESLint, with the Power of Ten rules for TypeScript |
+| `frontend/Dockerfile`, `compose.yaml`, `scripts/compose-smoke-test.sh` | The web UI's image, the whole app in one command, and a test of both together |
+
+How a question travels:
+
+```
+browser ──POST /api/ask──► Next.js server ──POST /ask/stream──► FastAPI ──► agent loop
+   ▲                       (passes it on)                                       │
+   └──── thinking, tool_call, tool_result, ..., answer ◄──── one event per step ◄┘
+```
+
+### The big idea: show the work while it happens
+
+An agent can take a minute or more: it thinks, runs SQL, runs Python and draws
+a chart. A page that shows a spinner for a minute and then an answer feels
+broken, and it asks you to trust the answer blindly. So the page shows each step
+the moment it happens: what the agent plans, the SQL it wrote, the rows that
+came back. You can check its work as it goes, and press **Stop** if it heads
+the wrong way.
+
+### Streaming with Server-Sent Events
+
+To show steps as they happen, the server must send the first part of its answer
+before the rest exists. There are three common ways:
+
+- **Polling:** the page asks "anything new?" every second. Simple, but slow and
+  wasteful.
+- **WebSockets:** a channel in both directions. Powerful, but we only need one
+  direction, and WebSockets need their own support in servers and proxies.
+- **Server-Sent Events (SSE):** an ordinary HTTP response that the server writes
+  bit by bit, one event at a time, in plain text. This is what we use.
+
+On the wire, it looks like this:
+
+```
+event: tool_call
+data: {"type": "tool_call", "id": "t1", "name": "query_database", ...}
+
+: ping
+
+event: answer
+data: {"type": "answer", "text": "**West** sold the most.", ...}
+```
+
+The agent from Lesson 2 already hands out one event per step: `run()` is a
+generator. So the new endpoint is short:
+
+```python
+@router.post("/ask/stream", response_class=EventSourceResponse)
+def ask_stream(run: Annotated[AgentRun, Depends()]) -> Iterator[ServerSentEvent]:
+    for event in run.events():
+        yield ServerSentEvent(data=event, event=event["type"])
+```
+
+Three details matter:
+
+- **Check first, then stream.** Once a stream has started, its status code
+  (200) has been sent and can't change. So `AgentRun` checks the request before
+  the first byte goes out: is there an API key, and do the datasets exist? A
+  problem found there returns a normal 503 or 404 error.
+- **Pings.** While the agent waits for Claude, FastAPI sends a comment line
+  (`: ping`) every 15 seconds, so that no proxy closes a connection that looks
+  idle.
+- **Stopping.** When the browser goes away, FastAPI stops asking the generator
+  for events, and the agent stops after its current step. Nobody pays for an
+  answer that nobody reads.
+
+Browsers have `EventSource` for SSE, but it can only send GET requests. A
+question needs a POST with a JSON body, so `sse.ts` reads the response with
+`fetch()` and cuts it into events itself. That parser looks simple, but the
+network can cut the text anywhere. One chunk can hold three events, or half of
+one. A line can end in `\r\n` with the `\r` and the `\n` in two different
+chunks. Even a character such as `é`, which is two bytes, can arrive one byte
+at a time. The tests cover each of these cases.
+
+### The browser never talks to the API
+
+The browser talks only to the server that sent it the page: the Next.js server.
+Its routes in `src/app/api/` pass each request on to FastAPI, and pass the
+answer back. This pattern is called a *backend for frontend*. The detour has
+good reasons:
+
+- **The API stays private.** In Docker Compose, the API publishes no port at
+  all. Only the web server can reach it.
+- **No CORS.** A browser refuses to let a page read answers from another origin
+  (another host or port) unless that server allows it with CORS headers. With
+  one origin there is nothing to set up, and nothing to get wrong, so the API no
+  longer has any CORS settings.
+- **One place to check requests.** The web server refuses an upload that is
+  too large before it sends a single byte on. And it passes on only the four
+  calls the page needs: `POST /query`, which runs any SQL you give it, can't be
+  reached from the browser.
+- **Stop works all the way.** The route hands the browser's cancel signal to
+  its own request. When you press Stop, the browser cancels its request, the
+  web server cancels its own, and FastAPI stops the agent. A browser test proves
+  the whole chain.
+
+### Every byte from the network is untrusted
+
+The answer, the SQL and the tables come from the agent, and the agent read your
+CSV. A CSV can hold text that tries to trick the model (prompt injection, from
+Lesson 1). So the page treats everything it shows as untrusted:
+
+1. **Check its shape.** TypeScript's types disappear when the code runs. So
+   `events.ts` and `api.ts` check every field of every answer at run time.
+   Anything unexpected becomes a clear error message, never a crash. A lint rule
+   forbids `as` casts, which would only silence the type checker.
+2. **Text, never HTML.** The page never inserts a string as HTML. A lint rule
+   bans React's `dangerouslySetInnerHTML`. Even the Markdown in answers goes
+   through our own small renderer, `markdown.tsx`. It builds React elements for
+   bold text, code and lists, and treats everything else as plain text. So
+   `<img src=x onerror=alert(1)>` in an answer shows up as those characters.
+3. **A Content-Security-Policy (CSP).** This header tells the browser which
+   scripts may run. Ours allows only scripts that carry a *nonce*, a random value
+   that `proxy.ts` makes anew for every page. An attacker who somehow got a
+   `<script>` into the page can't know the nonce, so the browser refuses to run
+   it. `'strict-dynamic'` lets our own scripts load the rest of the app.
+4. **Limits.** Every buffer has a cap: 5 MB for one event, 50 MB for one answer,
+   50 questions, 500 steps per question, 100 rows per table. That is Power of
+   Ten rule 3, in the browser.
+
+A few more headers complete the picture: `X-Frame-Options: DENY` (no other site
+may show the page inside a frame, which stops clickjacking), `nosniff` and
+`Referrer-Policy: no-referrer`.
+
+### React, kept thin
+
+The logic lives in plain TypeScript in `src/lib/`, where it is easy to test.
+React only shows the result.
+
+- **A reducer.** `conversation.ts` holds the conversation's state, and one pure
+  function `(state, action) => new state` changes it. Every change is an action:
+  `asked`, `event`, `ended`, `failed` or `stopped`. A pure function is easy to
+  test: give it a state and an action, and check what comes back. No browser
+  needed.
+- **A hook.** `useConversation` connects the reducer to the stream (one action
+  per event) and keeps the `AbortController` that the Stop button uses.
+- **Ids.** Every question gets an id, and every action carries it. A late event
+  from a stopped question can't end up in the next one.
+
+### Charts: Plotly in the browser
+
+In Lesson 2, `make_chart` returned a Plotly figure as JSON. The page now draws
+it with Plotly's own JavaScript library, so you can hover over the values, zoom
+in and download a PNG. Plotly is large, so the page loads it with a dynamic
+`import()`, only when the first chart appears. We use Plotly's "cartesian"
+bundle. It has the chart types the agent uses (bar, line, scatter, pie and
+histogram), at about a third of the size of the full library: 1.5 MB, or 0.5 MB
+compressed. The colors follow the page's light or dark theme.
+
+### Testing a web UI: three layers
+
+| Layer | Tool | What it proves |
+|---|---|---|
+| Unit and component tests | Vitest and Testing Library, in jsdom (an imitation of a browser that runs in Node.js) | The parser, the reducer, each component and each server route. 131 tests, with a 95% coverage gate |
+| Browser tests | Playwright, in a real Chromium, on a desktop and a phone screen | The whole page through the real Next.js server: asking, Stop, errors, uploads, security headers and accessibility |
+| Compose smoke test | Docker and curl | The two real images together, and their security settings |
+
+Four ideas from these tests are worth taking with you:
+
+- **Test like a user.** Testing Library finds elements the way people do: by
+  their role and name, such as `getByRole("button", { name: "Stop" })`, not by
+  CSS class. If a test can't find a button by its name, a person who uses a
+  screen reader can't either.
+- **A stand-in for the API.** The browser tests run `e2e/fake-api.mts`, a small
+  server that answers like the Python API, with made-up data. So they need no
+  Python and no API key, cost nothing, and give the same result every time. It
+  also notes when a stream was closed early, which is how the Stop test proves
+  that Stop reached the API.
+- **Accessibility, checked by a machine.** The browser tests run axe, which
+  checks the page against the WCAG 2.2 rules: contrast, labels, roles and more.
+  It found a real problem: the chart was marked as an image (`role="img"`), but
+  Plotly puts buttons inside it, and an image can't contain buttons. The chart
+  is now a `<figure>`.
+- **No console errors.** Every browser test fails if the page logs an error. A
+  script that the CSP blocked would log one, so this also proves that the CSP
+  lets our own code run.
+
+### The Power of Ten in TypeScript
+
+The rules from Lesson 3 apply to the web UI too. ESLint checks them, with
+`--max-warnings=0`, and TypeScript runs in its strictest mode.
+[docs/CODING_STANDARD.md](docs/CODING_STANDARD.md) has the full table; the
+interesting part is where TypeScript needs a different answer than Python:
+
+- **Rule 2 (bounded loops).** `while` and `do...while` are banned. Reading a
+  stream, which could go on forever, counts the bytes and stops at a limit:
+  `for (let total = 0; total <= maxBytes; )`.
+- **Rule 5 (assertions).** There is no `require()` here. Instead, every value
+  that comes from outside is checked by code (`isObject`, `parseAgentEvent`), and
+  casts with `as` are banned.
+- **Rule 7 (check every result).** typescript-eslint reports a promise that
+  nobody awaits. Where we truly don't wait, we say so with `void`.
+- **Rule 9 (no function pointers).** This one we relax: React is built on
+  callbacks, such as `onClick`. Instead, ESLint limits how deeply they nest, and
+  `any` is banned, so every callback has a checked type.
+
+### The whole app in one command: Docker Compose
+
+`compose.yaml` describes both services, and `docker compose up --build` builds
+and starts them. The web UI waits for the API's health check before it starts.
+
+The web UI's image is built in three stages: install the packages, build the
+app, and copy only the result into a clean image. Next.js helps here: with
+`output: "standalone"`, `next build` works out which files the server really
+needs and copies them, with only those parts of `node_modules`, into one folder.
+The final image holds that folder, the browser files and Node.js, and nothing
+else: no compilers, no tests, not even npm.
+
+Compose adds a few layers of defense in depth:
+
+- **Only one door.** Only the web UI publishes a port, and only on `127.0.0.1`,
+  so other computers on your network can't open the app.
+- **Read-only containers.** Neither container can change a file in its image.
+  The API may write only to its data volume and to `/tmp`, which lives in memory.
+- **No extra rights.** `cap_drop: [ALL]` takes away every Linux capability, and
+  `no-new-privileges` stops a program from gaining rights later.
+
+`scripts/compose-smoke-test.sh` checks all of this in CI. It builds both
+images and uploads files through the web UI's server. It checks the headers,
+the 50 MB limit and who can reach what. It runs Python in the sandbox inside
+the read-only API container. Then it restarts everything, to check that the
+data is still there.
+
+### Try it
+
+The quickest way, with Docker:
+
+```bash
+cp .env.example .env      # then add your ANTHROPIC_API_KEY to .env
+make up                   # docker compose up --build; open http://localhost:3000
+```
+
+Upload `data/sample_sales.csv`, then click one of the suggested questions. To
+watch the stream itself, open your browser's developer tools, go to the
+**Network** tab, and click the `ask` request: Chrome's **EventStream** view
+shows each event as it arrives.
+
+To work on the UI, run it in development mode, which reloads as you edit:
+
+```bash
+make run          # terminal 1: the API on http://localhost:8000
+make web-setup    # once: install the web UI's packages
+make web-dev      # terminal 2: the web UI on http://localhost:3000
+```
+
+The checks:
+
+```bash
+make web-check       # formatting, lint, types, and the tests with coverage
+make web-e2e         # the browser tests (once: cd frontend && npx playwright install chromium)
+make compose-smoke   # both images together, as CI runs them
+```
+
+### Exercises
+
+1. **Watch the raw stream.** With `make run` and a key in `.env`, run
+   `curl -N -X POST localhost:8000/ask/stream -H 'content-type: application/json' -d '{"question": "How many orders are there?"}'`.
+   Find the events and the pings. What changes without `-N`?
+2. **Break the CSP on purpose.** In `src/lib/csp.ts`, remove the nonce from
+   `script-src`. Run `make web-e2e`. Which tests fail, and what does the browser
+   console say? Put it back.
+3. **Find the guard.** In `SseParser.push` in `src/lib/sse.ts`, delete the lines
+   that handle `pendingCR`, and run `cd frontend && npm test`. Which test catches
+   it? Why can't the parser treat a `\r` at the end of a chunk as the end of a
+   line?
+4. **Teach the Markdown renderer italics.** Add `_italic_` to `markdown.tsx`,
+   with tests. Then think about links (`[text](url)`): why must a renderer refuse
+   a `javascript:` URL?
+5. **Use only the keyboard.** Ask a question, open the steps and press Stop,
+   without the mouse. Then remove the `<label>` from `QuestionForm.tsx` and run
+   `make web-e2e`. What does axe report?
+
+### Words to know
+
+- **SSE (Server-Sent Events):** a standard way for a server to send events to a
+  browser over one long HTTP response.
+- **Backend for frontend (BFF):** a server that belongs to the web UI and
+  passes its requests on to the real API.
+- **Origin:** the scheme, host and port of a page, such as
+  `http://localhost:3000`.
+- **CORS (Cross-Origin Resource Sharing):** headers with which a server allows
+  pages from other origins to read its answers.
+- **XSS (cross-site scripting):** an attack that gets a script into someone
+  else's page.
+- **CSP (Content-Security-Policy):** a header that tells the browser which
+  scripts, styles and connections a page may use.
+- **Nonce:** a "number used once"; here, a random value that marks the scripts
+  that may run.
+- **Reducer:** a pure function that takes a state and an action and returns
+  the new state.
+- **jsdom:** an imitation of a browser, written in JavaScript, for fast tests in
+  Node.js.
+- **End-to-end (e2e) test:** a test that uses the app from the outside, as a
+  person would, through a real browser.
+- **WCAG:** the Web Content Accessibility Guidelines, the standard for pages
+  that everyone can use.
+- **Defense in depth:** several independent layers of protection, so that one
+  failure is not enough.
 
 ---
 
-*Next: Lesson 4, the chat UI. Streaming agent steps to the browser live with
-Server-Sent Events, and drawing the charts with Plotly.*
+*Next: Lesson 5, step 4. Connecting your own Postgres database, measuring how
+often the agent is right with an evaluation set, and a demo.*
