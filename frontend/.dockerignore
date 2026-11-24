@@ -1,0 +1,23 @@
+# Files that never go into the Docker build. The image installs its own
+# packages and builds the app itself, and it needs no tests, reports or local
+# settings (which may hold secrets).
+node_modules/
+.next/
+out/
+coverage/
+test-results/
+playwright-report/
+e2e/
+src/test/
+**/*.test.ts
+**/*.test.tsx
+playwright.config.ts
+vitest.config.mts
+eslint.config.mjs
+.prettierrc.json
+.prettierignore
+*.tsbuildinfo
+next-env.d.ts
+.env*
+Dockerfile
+.dockerignore
