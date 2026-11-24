@@ -59,6 +59,18 @@ test("stops an answer, and the API stops working on it too", async ({ page, requ
     .toEqual({ closed: true });
 });
 
+test("never turns a chart's text into a link", async ({ page }) => {
+  const box = page.getByRole("textbox", { name: "Your question" });
+  await box.fill("Show me a chart with a link.");
+  await box.press("Enter");
+  await expect(page.getByText("Here is the chart.")).toBeVisible();
+  const chart = page.getByRole("figure").first();
+  await expect(chart.locator(".main-svg").first()).toBeVisible(); // Plotly drew it
+  // The text shows as it was written, tags and all, and nothing can be clicked.
+  await expect(chart.getByText("Sign in again</a>").first()).toBeVisible();
+  await expect(chart.locator("svg a")).toHaveCount(0);
+});
+
 test("shows why the agent could not answer", async ({ page }) => {
   const box = page.getByRole("textbox", { name: "Your question" });
   await box.fill("This question will fail.");

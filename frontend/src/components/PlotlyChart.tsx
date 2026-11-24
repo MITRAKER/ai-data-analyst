@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { Chart } from "@/lib/events";
+import { isChart, type Chart } from "@/lib/events";
 import { isObject, type JsonObject } from "@/lib/json";
 
 import styles from "./ConversationView.module.css";
@@ -22,6 +22,28 @@ export function chartTitle(chart: Chart): string {
   return isObject(title) && typeof title.text === "string" && title.text !== ""
     ? title.text
     : "Chart";
+}
+
+/**
+ * A copy of the chart in which no text can become a link or styled text.
+ *
+ * Plotly reads a few HTML tags in every text it draws: `<a href=...>` becomes
+ * a link that can be clicked, and `<span style=...>` can set any CSS. A
+ * chart's text comes from the agent and from the cells of a CSV file, so a
+ * crafted file could put a fake "sign in again" link on the page. So every
+ * "&", "<" and ">" in every string is escaped. Plotly turns "&lt;" back into
+ * "<" when it draws the text, so the chart still reads the same.
+ */
+export function escapeChartText(chart: Chart): Chart {
+  const escape = (_key: string, value: unknown): unknown =>
+    typeof value === "string"
+      ? value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+      : value;
+  const copy: unknown = JSON.parse(JSON.stringify(chart, escape));
+  if (!isChart(copy)) {
+    throw new TypeError("The chart could not be copied.");
+  }
+  return copy;
 }
 
 /** The agent's layout, with colors that match the page (light or dark). */
@@ -49,12 +71,13 @@ async function draw(element: HTMLElement, chart: Chart): Promise<void> {
   // Plotly is large, so it is downloaded only when the first chart appears.
   const { default: Plotly } = await import("plotly.js-cartesian-dist-min");
   const style = getComputedStyle(element);
+  const safe = escapeChartText(chart);
   const layout = themedLayout(
-    chart.layout,
+    safe.layout,
     style.getPropertyValue("--text").trim(),
     style.getPropertyValue("--border").trim(),
   );
-  await Plotly.react(element, chart.data, layout, CONFIG);
+  await Plotly.react(element, safe.data, layout, CONFIG);
 }
 
 async function erase(element: HTMLElement): Promise<void> {

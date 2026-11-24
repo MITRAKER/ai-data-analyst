@@ -16,6 +16,8 @@
  *   can press Stop. Then GET /test/closed?question=... says whether the web
  *   UI's server closed the stream, which shows that Stop reached the API;
  * - one that contains "fail" ends with an error from the agent;
+ * - one that contains "link" gets a chart whose text tries to add a link,
+ *   as a crafted CSV file could;
  * - any other question gets the same answer, with a table and a chart.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -57,6 +59,13 @@ const CHART = {
     xaxis: { title: { text: "region" } },
     yaxis: { title: { text: "revenue" } },
   },
+};
+
+/** A chart whose text holds the tags that Plotly would turn into a link. */
+const LINK = '<a href="https://example.com/">Sign in again</a>';
+const LINK_CHART = {
+  data: [{ type: "bar", x: [LINK, "R&D"], y: [3, 2] }],
+  layout: { title: { text: `Revenue ${LINK}` } },
 };
 
 const SQL = "SELECT region, SUM(revenue) AS revenue FROM sales GROUP BY region ORDER BY 2 DESC";
@@ -184,6 +193,8 @@ async function ask(request: IncomingMessage, response: ServerResponse): Promise<
   response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
   if (question.includes("slowly")) {
     await answerSlowly(response);
+  } else if (question.includes("link")) {
+    sendEvent(response, { type: "answer", text: "Here is the chart.", charts: [LINK_CHART] });
   } else if (question.includes("fail")) {
     sendEvent(response, { type: "note", text: "Let me look at the data first." });
     sendEvent(response, {
