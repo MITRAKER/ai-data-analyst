@@ -1,0 +1,107 @@
+/* Colors, type and spacing for the whole app, in light and dark mode. */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-muted: #eef1f5;
+  --border: #d9dee6;
+  --text: #1b2230;
+  --text-muted: #5b6677;
+  --accent: #2f5fd0;
+  --accent-text: #ffffff;
+  --accent-soft: #e6edfb;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --warning-soft: #fff6e0;
+  --warning-border: #e8c46a;
+  --code-bg: #f1f3f7;
+  --radius: 10px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11151c;
+    --surface: #181d26;
+    --surface-muted: #202734;
+    --border: #2d3646;
+    --text: #e6e9ef;
+    --text-muted: #9aa5b6;
+    --accent: #7ea2ff;
+    --accent-text: #0d1220;
+    --accent-soft: #1f2a44;
+    --danger: #ff8a80;
+    --danger-soft: #3a1d1b;
+    --warning-soft: #33290f;
+    --warning-border: #7a6420;
+    --code-bg: #10141b;
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+  margin: 0;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+}
+
+/* Hidden on screen, but still read by screen readers. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
