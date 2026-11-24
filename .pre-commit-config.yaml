@@ -87,7 +87,8 @@ repos:
         entry: uv run --project backend detect-secrets-hook
         language: system
         types: [text]
-        exclude: (^|/)uv\.lock$ # package hashes look like secrets, but are not
+        # Package hashes in the lock files look like secrets, but are not.
+        exclude: (^|/)(uv\.lock|package-lock\.json)$
 
       # ---- Shell scripts and GitHub Actions files ----
       # check-jsonschema compares each file with the official schema for its
@@ -150,11 +151,35 @@ repos:
         types: [python]
         pass_filenames: false
 
+      # ---- Web UI (frontend/): the same checks as CI ----
+      # They use the packages in frontend/node_modules, so run `make web-setup`
+      # once first. They run only when a file in frontend/ changed, and npm
+      # runs each script inside frontend/.
+      - id: web-format
+        name: Prettier (web UI formatting)
+        entry: npm --prefix frontend run --silent format:check
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+      - id: web-lint
+        name: ESLint (web UI)
+        entry: npm --prefix frontend run --silent lint
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+
       # ---- Before each push: the full test suite (it takes a few seconds) ----
       - id: pytest
         name: pytest with the coverage gate
         entry: uv run --directory backend pytest --cov -q
         language: system
         types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+      - id: web-check
+        name: web UI types and tests, with the coverage gate
+        entry: npm --prefix frontend run --silent check
+        language: system
+        files: ^frontend/
         pass_filenames: false
         stages: [pre-push]

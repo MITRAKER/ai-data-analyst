@@ -39,6 +39,34 @@ updates:
           - "minor"
           - "patch"
 
+  # The web UI's npm packages (frontend/package.json and package-lock.json).
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # TypeScript 7 is a new compiler, written in Go, and typescript-eslint
+      # does not support it yet. Move to it once typescript-eslint does.
+      - dependency-name: "typescript"
+        versions: [">=7"]
+      # The types for Node.js follow its major version: keep them on the
+      # version in frontend/.nvmrc, and update both together.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
   # The actions our workflows use (actions/checkout and so on), found in
   # .github/workflows/ and in our own composite action. All of them are updated
   # together in one pull request.
@@ -59,10 +87,14 @@ updates:
         patterns:
           - "*"
 
-  # The base image in backend/Dockerfile (python:3.15-slim). Before you merge a
-  # new Python version here, add it to the test matrix in ci.yml.
+  # The base images in backend/Dockerfile (python:3.15-slim) and
+  # frontend/Dockerfile (node:26-slim). Before you merge a new Python version
+  # here, add it to the test matrix in ci.yml. Before you merge a new Node.js
+  # version, change frontend/.nvmrc to match.
   - package-ecosystem: "docker"
-    directory: "/backend"
+    directories:
+      - "/backend"
+      - "/frontend"
     schedule:
       interval: "weekly"
       day: "monday"

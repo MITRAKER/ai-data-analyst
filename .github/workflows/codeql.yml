@@ -45,10 +45,12 @@ jobs:
       fail-fast: false
       matrix:
         # Run this job once per language:
-        #   python:  the backend code.
-        #   actions: our GitHub Actions workflow files. Workflows can have
-        #            security bugs too, for example script injection.
-        language: [python, actions]
+        #   python:                the backend code.
+        #   javascript-typescript: the web UI (frontend/).
+        #   actions:               our GitHub Actions workflow files. Workflows
+        #                          can have security bugs too, for example
+        #                          script injection.
+        language: [python, javascript-typescript, actions]
     steps:
       - name: Check out the code
         uses: actions/checkout@v7
@@ -56,8 +58,8 @@ jobs:
           persist-credentials: false
 
       # Set up CodeQL for one language.
-      #   build-mode: none   scan the source files directly. Python and workflow
-      #                      files need no compile step.
+      #   build-mode: none   scan the source files directly. Python, TypeScript
+      #                      and workflow files need no compile step.
       #   queries: security-extended   the default security checks plus extra ones.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -66,8 +68,8 @@ jobs:
           build-mode: none
           queries: security-extended
 
-      # Run the scan and upload the findings. The category keeps the Python
-      # results and the workflow results apart in the Security tab.
+      # Run the scan and upload the findings. The category keeps the results
+      # of each language apart in the Security tab.
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v4
         with:
