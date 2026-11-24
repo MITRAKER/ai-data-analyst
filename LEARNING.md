@@ -427,9 +427,12 @@ them run a `make` command, so you can run the same check yourself first.
 | NASA/JPL Power of Ten | Our coding standard (below) | `make jpl` |
 | Tests (Python 3.12, 3.13, 3.14, 3.15) | Every test passes on every Python version we support, with at least 95% branch coverage | `make test` |
 | Dependency audit (pip-audit) | No package we use has a known vulnerability | `make security` |
-| Files, secrets, scripts and workflows (pre-commit) | Whitespace, line endings, valid YAML and TOML, no keys or passwords, ShellCheck, zizmor, and the schemas of the GitHub files | `cd backend && uv run pre-commit run --all-files` |
+| Files, secrets, scripts and workflows (pre-commit) | Whitespace, line endings, valid YAML and TOML, no keys or passwords, ShellCheck, zizmor, and the schemas of the GitHub files | `cd backend && uv run pre-commit run --all-files` (from step 3 on, the web UI's hooks need `make web-setup` first) |
 | Docker image | The image builds, starts, passes its health check and answers real requests | `make docker smoke` |
-| All checks passed | Sums up the jobs above, so branch protection needs only this one | (none) |
+| All checks passed | Sums up every other job, so branch protection needs only this one | (none) |
+
+Step 3 adds three more jobs for the web UI: its checks, the browser tests, and
+the Docker Compose smoke test. Lesson 4 explains them.
 
 Three ideas are worth learning from this table:
 
@@ -666,9 +669,10 @@ question, and watch the agent work, step by step, while it happens.
 | `backend/app/main.py` | Two new endpoints: `POST /ask/stream` sends each step of the agent as it happens, and `GET /agent/status` says whether the agent can answer (is there an API key?) |
 | `frontend/src/app/` | The page, and the web UI's own server routes (`api/`), which pass the browser's requests on to the Python API |
 | `frontend/src/proxy.ts`, `src/lib/csp.ts` | A Content-Security-Policy with a new random nonce for every page |
+| `frontend/src/lib/guard.ts` | Checks that refuse requests from other websites, and host names the app doesn't know |
 | `frontend/src/lib/` | The logic, without React: reading the stream (`sse.ts`), checking every event (`events.ts`), the state of the conversation (`conversation.ts`), and a safe Markdown renderer (`markdown.tsx`) |
 | `frontend/src/hooks/`, `src/components/` | React: the state of the page, and what it shows |
-| `frontend/src/**/*.test.ts(x)` | 131 unit and component tests (Vitest and Testing Library) |
+| `frontend/src/**/*.test.ts(x)` | Unit and component tests (Vitest and Testing Library) |
 | `frontend/e2e/` | Browser tests (Playwright) on a desktop and a phone screen, with a stand-in for the Python API |
 | `frontend/eslint.config.mjs` | ESLint, with the Power of Ten rules for TypeScript |
 | `frontend/Dockerfile`, `compose.yaml`, `scripts/compose-smoke-test.sh` | The web UI's image, the whole app in one command, and a test of both together |
@@ -759,13 +763,48 @@ good reasons:
   one origin there is nothing to set up, and nothing to get wrong, so the API no
   longer has any CORS settings.
 - **One place to check requests.** The web server refuses an upload that is
-  too large before it sends a single byte on. And it passes on only the four
-  calls the page needs: `POST /query`, which runs any SQL you give it, can't be
-  reached from the browser.
+  too large before it sends a single byte on. And it passes on only the five
+  calls the page needs (list, upload and describe datasets, check whether the
+  agent is ready, and ask a question): `POST /query`, which runs any SQL you
+  give it, can't be reached from the browser.
 - **Stop works all the way.** The route hands the browser's cancel signal to
   its own request. When you press Stop, the browser cancels its request, the
-  web server cancels its own, and FastAPI stops the agent. A browser test proves
-  the whole chain.
+  web server cancels its own, and FastAPI stops the agent. A browser test
+  checks the chain up to the API: a stand-in API notes that the web server
+  closed its stream.
+
+### Other websites can't use the app through your browser
+
+The app runs on your computer, without a login. That sounds safe: other
+computers can't reach it. But every website you visit runs its code in the same
+browser as the app, and a browser sends requests wherever a page asks. A review
+of this step found two ways for a page on another site to use the app:
+
+- **Cross-site request forgery (CSRF).** The other site's page sends a form, or
+  a `fetch()`, to `http://localhost:3000/api/datasets`. The browser can't let
+  that page read the answer, but it does send the request. So the page could
+  replace your `sales` dataset with fake numbers, and you would later get wrong
+  answers, or ask question after question on your API credits. The fix: the
+  browser names who sent a request. `Sec-Fetch-Site` says `same-origin` only
+  for the app's own page, and `Origin` names the sender's site. The web server
+  refuses an upload or a question from anyone else with 403 Forbidden. A
+  question must also be JSON (415 otherwise): a page from another site may
+  send JSON only after asking the server first (a CORS "preflight"), and our
+  server never says yes. Tools such as curl send neither header, so they still
+  work. They don't run inside your browser, where another site's page could
+  use them.
+- **DNS rebinding.** The other site points its own name, such as
+  `evil.example`, at `127.0.0.1` once its page has loaded. The browser then
+  treats the app as part of `evil.example`, and that page may read the answers:
+  your datasets. But each request still says `Host: evil.example`. So the web
+  server answers only to the names of this computer, `localhost`, `127.0.0.1`
+  and `[::1]`, and refuses any other name with 421 Misdirected Request. To open
+  the app under another name, list it in the `ALLOWED_HOSTS` setting.
+
+`src/lib/guard.ts` holds both checks. Every API route calls them first, and
+`proxy.ts` checks the host name of every page. A browser test plays the other
+site: a page on another port uploads a file with `fetch()`, and the test checks
+that the server refused it.
 
 ### Every byte from the network is untrusted
 
@@ -782,11 +821,22 @@ Lesson 1). So the page treats everything it shows as untrusted:
    through our own small renderer, `markdown.tsx`. It builds React elements for
    bold text, code and lists, and treats everything else as plain text. So
    `<img src=x onerror=alert(1)>` in an answer shows up as those characters.
+   Charts were the one gap: Plotly reads a few HTML tags in a chart's text, so
+   a CSV cell such as `<a href="https://evil.example">Sign in again</a>` became
+   a real link on the page. Now the page escapes `&`, `<` and `>` in every
+   string of a chart before Plotly draws it (`escapeChartText` in
+   `PlotlyChart.tsx`). Plotly turns `&lt;` back into `<` when it shows the
+   text, so the chart reads the same, and nothing in it can be clicked.
 3. **A Content-Security-Policy (CSP).** This header tells the browser which
    scripts may run. Ours allows only scripts that carry a *nonce*, a random value
    that `proxy.ts` makes anew for every page. An attacker who somehow got a
    `<script>` into the page can't know the nonce, so the browser refuses to run
-   it. `'strict-dynamic'` lets our own scripts load the rest of the app.
+   it. `'strict-dynamic'` lets our own scripts load the rest of the app. A
+   nonce only works if the page is made for each request: a page that Next.js
+   built ahead of time has no nonce, so the CSP blocks its scripts. That is why
+   the layout calls `connection()`, which tells Next.js to render every page,
+   even the page-not-found page, when it is requested. The API's routes send
+   JSON, never a page, so their policy allows nothing at all.
 4. **Limits.** Every buffer has a cap: 5 MB for one event, 50 MB for one answer,
    50 questions, 500 steps per question, 100 rows per table. That is Power of
    Ten rule 3, in the browser.
@@ -809,6 +859,12 @@ React only shows the result.
   per event) and keeps the `AbortController` that the Stop button uses.
 - **Ids.** Every question gets an id, and every action carries it. A late event
   from a stopped question can't end up in the next one.
+- **The newest request wins.** Answers can arrive in any order. Each request
+  for the list of datasets, and each click on a dataset, gets a number, and
+  only the answer to the newest one is shown (`useDatasets.ts`). So a slow
+  answer to an older click can't replace a newer one. React's strict mode,
+  which runs every effect twice while you develop, makes this happen on every
+  page load, and a test checks it.
 
 ### Charts: Plotly in the browser
 
@@ -824,8 +880,8 @@ compressed. The colors follow the page's light or dark theme.
 
 | Layer | Tool | What it proves |
 |---|---|---|
-| Unit and component tests | Vitest and Testing Library, in jsdom (an imitation of a browser that runs in Node.js) | The parser, the reducer, each component and each server route. 131 tests, with a 95% coverage gate |
-| Browser tests | Playwright, in a real Chromium, on a desktop and a phone screen | The whole page through the real Next.js server: asking, Stop, errors, uploads, security headers and accessibility |
+| Unit and component tests | Vitest and Testing Library, in jsdom (an imitation of a browser that runs in Node.js) | The parser, the reducer, each component and each server route, with a 95% coverage gate |
+| Browser tests | Playwright, in a real Chromium, on a desktop and a phone screen | The whole page through the real Next.js server: asking, Stop, errors, uploads, security headers, requests from another site, and accessibility |
 | Compose smoke test | Docker and curl | The two real images together, and their security settings |
 
 Four ideas from these tests are worth taking with you:
@@ -890,9 +946,12 @@ Compose adds a few layers of defense in depth:
 
 `scripts/compose-smoke-test.sh` checks all of this in CI. It builds both
 images and uploads files through the web UI's server. It checks the headers,
-the 50 MB limit and who can reach what. It runs Python in the sandbox inside
-the read-only API container. Then it restarts everything, to check that the
-data is still there.
+the 50 MB limit, that requests from other websites and for other host names are
+refused, and who can reach what. It reads each container's settings from
+Docker (read-only, no capabilities, no new privileges), and checks that neither
+app runs as root or can write outside the places it may. It runs Python in the
+sandbox inside the read-only API container. Then it restarts everything, to
+check that the data is still there.
 
 ### Try it
 
@@ -924,13 +983,24 @@ make web-e2e         # the browser tests (once: cd frontend && npx playwright in
 make compose-smoke   # both images together, as CI runs them
 ```
 
+CI runs these in three new jobs. The web UI's job also builds the app and runs
+`npm audit`, which looks for known vulnerabilities in the locked packages, and
+`npm audit signatures`, which checks that each package carries the npm
+registry's signature, so it is the one that npm published and not a copy that
+someone changed on the way.
+
 ### Exercises
 
-1. **Watch the raw stream.** With `make run` and a key in `.env`, run
+1. **Watch the raw stream.** With `make run` and a key in `.env`, upload the
+   sample first: `curl -F file=@data/sample_sales.csv localhost:8000/datasets`.
+   Then run
    `curl -N -X POST localhost:8000/ask/stream -H 'content-type: application/json' -d '{"question": "How many orders are there?"}'`.
-   Find the events and the pings. What changes without `-N`?
-2. **Break the CSP on purpose.** In `src/lib/csp.ts`, remove the nonce from
-   `script-src`. Run `make web-e2e`. Which tests fail, and what does the browser
+   Find the events. A `: ping` comes only after 15 seconds without an event, so
+   ask a harder question to see one. What changes without `-N`?
+2. **Break the CSP on purpose.** In `src/lib/csp.ts`, remove `'nonce-${nonce}'`
+   from `script-src`, and rename the parameter `nonce` to `_nonce`, so that the
+   build still passes (TypeScript allows an unused parameter whose name starts
+   with `_`). Run `make web-e2e`. Which tests fail, and what does the browser
    console say? Put it back.
 3. **Find the guard.** In `SseParser.push` in `src/lib/sse.ts`, delete the lines
    that handle `pendingCR`, and run `cd frontend && npm test`. Which test catches
@@ -940,8 +1010,14 @@ make compose-smoke   # both images together, as CI runs them
    with tests. Then think about links (`[text](url)`): why must a renderer refuse
    a `javascript:` URL?
 5. **Use only the keyboard.** Ask a question, open the steps and press Stop,
-   without the mouse. Then remove the `<label>` from `QuestionForm.tsx` and run
-   `make web-e2e`. What does axe report?
+   without the mouse. Then remove the `<label>` and the `placeholder` from
+   `QuestionForm.tsx` and run `make web-e2e`. What does axe report? (axe
+   accepts a placeholder as a label of last resort, so remove both.)
+6. **Play the other website.** Start the app with `make up`, and send an upload
+   the way another site's page would make your browser send it:
+   `curl -H 'Origin: https://evil.example' -F file=@data/sample_sales.csv localhost:3000/api/datasets`.
+   What does the server answer? Now send `-H 'Host: evil.example'` with a
+   `GET` of `localhost:3000/api/datasets`. Which trick does each check stop?
 
 ### Words to know
 
@@ -953,6 +1029,10 @@ make compose-smoke   # both images together, as CI runs them
   `http://localhost:3000`.
 - **CORS (Cross-Origin Resource Sharing):** headers with which a server allows
   pages from other origins to read its answers.
+- **CSRF (cross-site request forgery):** another site's page makes your browser
+  send a request to an app, which then acts as if you had sent it.
+- **DNS rebinding:** another site points its own host name at your computer, so
+  that the browser lets its page read an app that runs there.
 - **XSS (cross-site scripting):** an attack that gets a script into someone
   else's page.
 - **CSP (Content-Security-Policy):** a header that tells the browser which

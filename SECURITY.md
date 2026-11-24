@@ -136,26 +136,48 @@ is gone.
 ### The web UI
 
 The web page shows what the agent wrote, and the agent read your data. So the
-page treats every answer from the network as untrusted, too:
+web UI treats every answer from the network as untrusted, too, and it keeps
+other websites out:
 
 7. **One way in.** The browser talks only to the web UI's own server. That
-   server passes on only the four calls the page needs: list, upload and
-   describe datasets, and ask a question. `POST /query`, which runs any SQL it
-   gets, is not one of them. In Docker Compose, the API publishes no port, so
-   only the web UI's server can reach it, and the API needs no CORS settings.
-8. **Checked before use.** The page checks the shape of every response and every
+   server passes on only the five calls the page needs: list, upload and
+   describe datasets, check whether the agent is ready, and ask a question.
+   `POST /query`, which runs any SQL it gets, is not one of them. In Docker
+   Compose, the API publishes no port, so only the web UI's server can reach
+   it, and the API needs no CORS settings.
+8. **Only for the app's own page.** Every website you visit runs code in the
+   same browser as the app. The web UI's server (`frontend/src/lib/guard.ts`)
+   refuses the two tricks such a site could use:
+   - A *cross-site request*: the other site's page makes your browser send an
+     upload or a question to the app. It can't read the answer, but it could
+     replace a dataset with fake numbers, or spend your API credits. The
+     browser names the sender in the `Sec-Fetch-Site` and `Origin` headers, so
+     the server refuses an upload or a question from any other origin (403). A
+     question must also be sent as JSON (415 otherwise): a page from another
+     site may send JSON only with the server's permission, which it never gets.
+   - *DNS rebinding*: the other site points its own host name at `127.0.0.1`,
+     so the browser treats the app as part of that site, and its page could
+     read your data. Each request still carries that name in its `Host`
+     header, so the server answers only to `localhost`, `127.0.0.1` and
+     `[::1]` (421 otherwise). To open the app under another name, add that
+     name to `ALLOWED_HOSTS`.
+9. **Checked before use.** The page checks the shape of every response and every
    streamed event at run time before it uses them. Uploads and questions that
    are too large are refused by the web UI's server, from their
    `Content-Length`, before anything is passed on.
-9. **Text, never HTML.** Answers, SQL, code and table cells are always shown as
-   text. The page has its own small Markdown renderer, which builds page
-   elements and never HTML strings, so markup in an answer shows up as
-   characters and never runs.
-10. **A strict Content-Security-Policy.** Every page gets a new random nonce, and
-    only scripts that carry it may run. Other headers stop other sites from
-    showing the page in a frame (clickjacking) and stop browsers from guessing
-    content types. Charts need inline styles, so styles are less strict than
-    scripts.
+10. **Text, never HTML.** Answers, SQL, code and table cells are always shown as
+    text. The page has its own small Markdown renderer, which builds page
+    elements and never HTML strings, so markup in an answer shows up as
+    characters and never runs. Charts get the same care: Plotly reads a few
+    HTML tags in a chart's text, such as links and styles, so the page escapes
+    `&`, `<` and `>` in every string of a chart before Plotly draws it. A CSV
+    cell can't put a link on the page.
+11. **A strict Content-Security-Policy.** Every page, including the
+    page-not-found page, gets a new random nonce, and only scripts that carry
+    it may run. The API's routes send JSON, never a page, so their policy
+    allows nothing at all. Other headers stop other sites from showing the page
+    in a frame (clickjacking) and stop browsers from guessing content types.
+    Charts need inline styles, so styles are less strict than scripts.
 
 ### What these layers do not do
 
@@ -176,10 +198,12 @@ Also keep in mind:
 
 - **No login.** Neither the web UI nor the API has authentication or rate
   limits. Anyone who can reach them can upload data, read every dataset and ask
-  the agent questions, which spends your API credits. Run them on your own
-  computer, or put authentication in front of them before other people can
-  reach them. Docker Compose publishes the web UI on `127.0.0.1` only, so other
-  computers on your network can't open it.
+  the agent questions, which spends your API credits. Layer 8 keeps other
+  websites from doing this through your browser, but not a program that can
+  reach the server itself. Run them on your own computer, or put authentication
+  in front of them before other people can reach them. Docker Compose publishes
+  the web UI on `127.0.0.1` only, so other computers on your network can't open
+  it.
 - **Size limits.** Uploads, SQL text, query results and the number of datasets
   all have size limits, so one request cannot make the app grow without bound.
 - **A limited agent loop.** The agent stops after a fixed number of steps, so a

@@ -120,7 +120,7 @@ runs:
 
 ```bash
 make web-setup   # npm ci: the exact versions in frontend/package-lock.json
-make web-check   # runs every web UI check that CI runs, except the browser tests
+make web-check   # formatting, lint, types and unit tests (CI also builds the app and runs npm audit)
 make web-dev     # starts the web UI on http://localhost:3000, with hot reload
 ```
 
@@ -233,13 +233,13 @@ A few checks run only in CI.
 | pytest + coverage | All tests pass, warnings count as errors, and branch coverage is at least 95% | `make test` | A test failed, the code raised a warning, or new code has no tests. The coverage report lists the lines that no test reached. |
 | pip-audit | Known vulnerabilities in the packages we depend on | `make security` (needs internet access) | A package we use has a published vulnerability. Upgrade it to a fixed version (see [Adding a dependency](#adding-a-dependency)). Often a Dependabot pull request already does this. |
 | CodeQL | Deep security analysis of the Python code, the TypeScript code and the GitHub Actions workflows | CI only, on every pull request and once a week | CodeQL found a path where untrusted input reaches something dangerous, or a risky workflow pattern. Open the alert to see the path and how to fix it. |
-| pre-commit hooks | File hygiene (whitespace, line endings, valid YAML and TOML, no large files, executable scripts), secrets (detect-secrets and detect-private-key), ShellCheck for the shell scripts, zizmor for the security of the GitHub Actions files, and the JSON schemas of the workflow, action and Dependabot files | Runs on each `git commit`. To check every file: `cd backend && uv run pre-commit run --all-files` | A hook fixed a file for you: `git add` it and commit again. Or it found something that looks like a secret: remove it. If a real key was committed, follow [SECURITY.md](SECURITY.md#if-a-key-leaks). For ShellCheck and zizmor, the message names a rule and links to its explanation. |
+| pre-commit hooks | File hygiene (whitespace, line endings, valid YAML and TOML, no large files, executable scripts), secrets (detect-secrets and detect-private-key), ShellCheck for the shell scripts, zizmor for the security of the GitHub Actions files, and the JSON schemas of the workflow, action and Dependabot files | Runs on each `git commit`. To check every file: `cd backend && uv run pre-commit run --all-files` (the web UI's hooks need `make web-setup` first, or skip them with `SKIP=web-format,web-lint`) | A hook fixed a file for you: `git add` it and commit again. Or it found something that looks like a secret: remove it. If a real key was committed, follow [SECURITY.md](SECURITY.md#if-a-key-leaks). For ShellCheck and zizmor, the message names a rule and links to its explanation. |
 | Docker image | The image builds. A smoke test starts it, waits for its health check, checks that the app runs as an ordinary user who cannot change the installed code, uploads the sample CSV, runs a query, and runs Python in the sandbox | `make docker smoke` (needs Docker) | The Dockerfile or the app's startup is broken. A common cause: the app imports a package that is only in the `dev` group, which the image does not install. The job prints the container's log. |
 | Prettier | One consistent layout for the web UI's code | `cd frontend && npm run format:check`; `npm run format` fixes it | The code was not formatted. Run `npm run format` in `frontend/` and commit the result. |
 | ESLint | Likely bugs, React and accessibility mistakes, and the Power of Ten rules for TypeScript, with `--max-warnings=0` | `cd frontend && npm run lint` | The message names a rule, such as `complexity` or `@typescript-eslint/no-floating-promises`. [docs/CODING_STANDARD.md](docs/CODING_STANDARD.md#the-web-ui-typescript) maps the rules. |
 | TypeScript | Strict types for all of the web UI's code | `cd frontend && npm run typecheck` | A value may be `undefined` or of another type than the code expects. Check it with code; never silence it with `as`. |
 | Vitest + coverage | The web UI's unit and component tests pass, with at least 95% coverage of lines, branches and functions | `cd frontend && npm run test:coverage` | A test failed, or new code has no tests. Open `frontend/coverage/index.html` to see what no test reached. |
-| Build and npm audit | The production build works; no locked package has a known vulnerability; every package carries the npm registry's signature | `cd frontend && npm run build && npm audit` | The build output names the file. For `npm audit`, upgrade the package (see [Adding a dependency](#adding-a-dependency)). |
+| Build and npm audit | The production build works; no locked package has a known vulnerability; every package carries the npm registry's signature | `cd frontend && npm run build && npm audit && npm audit signatures` | The build output names the file. For `npm audit`, upgrade the package (see [Adding a dependency](#adding-a-dependency)). |
 | Playwright | Browser tests in Chromium, on a desktop and a phone screen: asking, Stop, errors, uploads, security headers, and accessibility (axe) | `make web-e2e` (install Chromium first, see [First-time setup](#first-time-setup)) | The test's name says what broke. In CI, the report with a screenshot of each failure is attached to the run. axe names the accessibility rule and the element. |
 | Docker Compose | Both images build and work together: uploads through the web UI's server, the size limit, the missing-key message, the sandbox in the read-only API container, data kept across a restart, and that only the web UI can be reached | `make compose-smoke` (needs Docker) | The script prints the logs of both services. Check `compose.yaml` and the Dockerfiles. |
 
@@ -251,9 +251,11 @@ other CI job passed. Branch protection on `main` should require that one check,
 plus CodeQL, instead of listing every job.
 
 Two hooks run before each `git push` instead of each commit: the backend's full
-test suite, and, when files in `frontend/` changed, every web UI check. So a
-push with failing tests stops on your computer, not in CI. The web UI's hooks
-use its packages, so run `make web-setup` before you change files there.
+test suite, and, when files in `frontend/` changed, the web UI's format, lint,
+type and unit-test checks (`make web-check`). So a push with failing tests stops
+on your computer, not in CI. The web UI's hooks use its packages, so run
+`make web-setup` before you change files there; without them, the hooks stop
+and say so.
 
 ## Coding standard
 
@@ -360,7 +362,7 @@ suite. Run `make test` before you push.
 ```bash
 cd frontend
 npx vitest src/lib/sse.test.ts       # one file, rerun on every change
-npx playwright test e2e/chat.spec.ts --project desktop   # one file, one screen size
+npm run build && npx playwright test e2e/chat.spec.ts --project desktop   # build first, then one file, one screen size
 ```
 
 ## Adding a dependency
@@ -401,9 +403,10 @@ npm install --save-dev <package>   # only needed to develop or test
 
 `frontend/.npmrc` makes npm save the exact version and run no install scripts.
 Commit `package-lock.json` together with `package.json`. Prefer a version that
-has been out for at least a week, for the same reason as Dependabot's cooldown
-(below). The Docker image installs every package to build the app, but ships
-only what the built server uses.
+has been out for at least a week: a malicious release is usually found and
+removed within days, which is also why Dependabot waits 7 days before it
+proposes a new version. The Docker image installs every package to build the
+app, but ships only what the built server uses.
 
 Dependabot also opens pull requests every week to keep the dependencies up to
 date.
