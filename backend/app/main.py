@@ -19,6 +19,7 @@ can stay on a private network.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -26,17 +27,19 @@ from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from app import __version__
 from app.agent.charts import Chart
-from app.agent.events import AgentEvent
+from app.agent.events import AgentEvent, error_event
 from app.agent.llm import AgentConfigError, LLMClient, claude_client_from_env
 from app.agent.orchestrator import DataAnalystAgent
 from app.config import load_dotenv
 from app.datastore import MAX_UPLOAD_BYTES, DatasetError, DatasetInfo, DataStore, QueryPayload
 from app.invariants import InvariantError
 from app.sql_guard import MAX_SQL_CHARS, UnsafeSQLError
+
+logger = logging.getLogger(__name__)
 
 MAX_QUERY_ROWS = 5_000
 MAX_QUESTION_CHARS = 2_000
@@ -56,7 +59,11 @@ class QueryRequest(BaseModel):
 class AskRequest(BaseModel):
     """A question for the agent, optionally limited to some datasets."""
 
-    question: str = Field(min_length=3, max_length=MAX_QUESTION_CHARS)
+    # Spaces around the question are removed first, so "   " is too short (422).
+    question: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=3, max_length=MAX_QUESTION_CHARS),
+    ]
     datasets: list[str] | None = Field(
         None,
         max_length=MAX_DATASETS_PER_QUESTION,
@@ -198,8 +205,15 @@ def ask_stream(run: Annotated[AgentRun, Depends()]) -> Iterator[ServerSentEvent]
     the quiet connection. If the client disconnects, the agent stops after the
     step it is on, so it doesn't keep spending API credits.
     """
-    for event in run.events():
-        yield ServerSentEvent(data=event, event=event["type"])
+    try:
+        for event in run.events():
+            yield ServerSentEvent(data=event, event=event["type"])
+    except Exception:
+        # Fault boundary: the stream has started, so an HTTP error is no longer
+        # possible. Log the bug for us, and still end with an `error` event.
+        logger.exception("The agent failed during /ask/stream")
+        failed = error_event("The agent failed unexpectedly. Please try again.")
+        yield ServerSentEvent(data=failed, event="error")
 
 
 def summarize(events: list[AgentEvent]) -> AskResponse:

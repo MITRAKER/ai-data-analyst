@@ -147,6 +147,9 @@ def test_ask_validates_datasets_and_question(sample_bytes: bytes) -> None:
     api = ask_client(FakeLLM([]), sample_bytes)
     assert api.post("/ask", json={"question": "hi?", "datasets": ["nope"]}).status_code == 404
     assert api.post("/ask", json={"question": "hi"}).status_code == 422
+    # Spaces don't count: a question of only spaces is too short too.
+    assert api.post("/ask", json={"question": "     "}).status_code == 422
+    assert api.post("/ask", json={"question": "  hi  "}).status_code == 422
 
 
 def test_ask_with_listed_datasets(sample_bytes: bytes) -> None:
@@ -223,6 +226,25 @@ def test_ask_stream_ends_with_an_error_event_when_the_run_fails(sample_bytes: by
     ]
 
 
+def test_ask_stream_ends_with_an_error_event_after_an_unexpected_failure(
+    sample_bytes: bytes,
+) -> None:
+    # This fake has no replies left, so the agent's first call to it fails with
+    # an IndexError: a stand-in for any bug that the agent does not expect.
+    api = ask_client(FakeLLM([]), sample_bytes)
+    events = sse_events(api.post("/ask/stream", json={"question": "How many?"}).text)
+    assert events == [
+        (
+            "error",
+            {
+                "type": "error",
+                "message": "The agent failed unexpectedly. Please try again.",
+                "charts": [],
+            },
+        )
+    ]
+
+
 def test_ask_stream_checks_the_request_before_streaming(sample_bytes: bytes) -> None:
     # A request that can't succeed gets a plain HTTP error, never a stream.
     api = ask_client(FakeLLM([]), sample_bytes)
@@ -230,6 +252,7 @@ def test_ask_stream_checks_the_request_before_streaming(sample_bytes: bytes) -> 
     assert unknown.status_code == 404
     assert unknown.headers["content-type"] == "application/json"
     assert api.post("/ask/stream", json={"question": "hi"}).status_code == 422
+    assert api.post("/ask/stream", json={"question": "     "}).status_code == 422
     no_key = TestClient(create_app(DataStore(":memory:")))
     res = no_key.post("/ask/stream", json={"question": "anything?"})
     assert res.status_code == 503
