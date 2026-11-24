@@ -112,13 +112,15 @@ code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$url/api/ask")"
 [ "$code" = "503" ] || fail "a question without an API key got HTTP $code, not 503"
 
-echo "Checking that the API publishes no port"
-# For a port that is not published, "docker compose port" prints ":0".
-published="$(compose port api 8000 2>/dev/null || true)"
-case "$published" in
-  "" | ":0") ;;
-  *) fail "the API can be reached from outside Compose, at $published" ;;
-esac
+echo "Checking which ports the host can reach"
+# "docker port" lists a container's published ports, one per line, such as
+# "3000/tcp -> 127.0.0.1:32768". It prints nothing when there are none.
+published="$(docker port "$(compose ps --quiet api)")"
+[ -z "$published" ] || fail "the API can be reached from outside Compose, at $published"
+published="$(docker port "$(compose ps --quiet web)")"
+only_this_computer='^3000/tcp -> 127\.0\.0\.1:[0-9]+$'
+[[ "$published" =~ $only_this_computer ]] ||
+  fail "the web UI is published at '$published', not only on 127.0.0.1"
 
 echo "Checking that neither app runs as root"
 uid="$(compose exec -T web id -u)"

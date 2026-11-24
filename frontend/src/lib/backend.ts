@@ -21,9 +21,19 @@ export const CLIENT_CLOSED = 499;
 /** Headers of the API's response that the browser gets too. All others are dropped. */
 const PASSED_ON = ["content-type", "cache-control", "x-accel-buffering"] as const;
 
-/** The full URL of an API path, such as "/datasets". */
+/**
+ * The full URL of an API path, such as "/datasets".
+ *
+ * @throws RangeError if the URL would point somewhere else than `path`, as
+ *   "/datasets/.." (the root) does. That is a bug in a route, so it is not
+ *   turned into an error response.
+ */
 export function backendUrl(path: string): URL {
-  return new URL(path, process.env.BACKEND_URL ?? DEFAULT_BACKEND_URL);
+  const url = new URL(path, process.env.BACKEND_URL ?? DEFAULT_BACKEND_URL);
+  if (url.pathname !== path) {
+    throw new RangeError(`Not a plain API path: ${path}`);
+  }
+  return url;
 }
 
 /** A JSON error in the same shape as the API's own errors: {"detail": "..."}. */
@@ -51,9 +61,11 @@ export function checkLength(request: Request, maxBytes: number, tooLarge: string
  * of an answer reaches the browser as soon as the API sends it.
  */
 export async function forward(path: string, init: RequestInit = {}): Promise<Response> {
+  // Outside the try: a bad path is a bug, not an API that can't be reached.
+  const url = backendUrl(path);
   let upstream: Response;
   try {
-    upstream = await fetch(backendUrl(path), { ...init, cache: "no-store", redirect: "error" });
+    upstream = await fetch(url, { ...init, cache: "no-store", redirect: "error" });
   } catch {
     // If the browser cancelled its request, the fetch fails on purpose. Throwing
     // here would log an error for something normal, such as a closed page.

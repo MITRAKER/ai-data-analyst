@@ -25,6 +25,15 @@ describe("backendUrl", () => {
     vi.stubEnv("BACKEND_URL", undefined);
     expect(backendUrl("/health").href).toBe(`${DEFAULT_BACKEND_URL}/health`);
   });
+
+  it("refuses a path that the URL would change", () => {
+    expect(backendUrl("/datasets/%C3%A9").pathname).toBe("/datasets/%C3%A9");
+    expect(() => backendUrl("/datasets/..")).toThrow(RangeError);
+    // Escaped dots count too: a URL treats "%2E%2E" as "..".
+    expect(() => backendUrl("/datasets/%2E%2E")).toThrow(RangeError);
+    expect(() => backendUrl("/datasets/./x")).toThrow(RangeError);
+    expect(() => backendUrl("/datasets?all")).toThrow(RangeError);
+  });
 });
 
 describe("checkLength", () => {

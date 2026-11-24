@@ -52,6 +52,17 @@ describe("GET routes", () => {
     await dataset(new Request("http://ui/api/datasets/x"), context);
     expect(called(fetch).path).toBe("/datasets/..%2Fquery");
   });
+
+  it('answers "unknown dataset" for "." and "..", which would reach another path', async () => {
+    const fetch = fakeFetch(json({}));
+    for (const name of [".", ".."]) {
+      const context = { params: Promise.resolve({ name }) };
+      const response = await dataset(new Request("http://ui/api/datasets/x"), context);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ detail: `Unknown dataset: ${name}` });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/datasets", () => {
