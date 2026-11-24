@@ -13,10 +13,14 @@ export const SUGGESTION = "Which region brought in the most revenue?";
  * Playwright's `test`, with one addition: a test fails if the page logs an
  * error. That includes a script or a style that the Content-Security-Policy
  * blocked, and an error that React only reports in the console.
+ *
+ * The browser also logs each response with an error status, such as 404. A
+ * test that expects some, sets them with `test.use({ expectedStatuses: [404] })`.
  */
-export const test = base.extend<{ consoleErrors: string[] }>({
+export const test = base.extend<{ consoleErrors: string[]; expectedStatuses: number[] }>({
+  expectedStatuses: [[], { option: true }],
   consoleErrors: [
-    async ({ page }, provide) => {
+    async ({ page, expectedStatuses }, provide) => {
       const errors: string[] = [];
       page.on("console", (message) => {
         if (message.type() === "error") {
@@ -27,7 +31,11 @@ export const test = base.extend<{ consoleErrors: string[] }>({
         errors.push(error.message);
       });
       await provide(errors);
-      expect(errors, "errors in the browser console").toEqual([]);
+      const expected = expectedStatuses.map(
+        (status) => `the server responded with a status of ${String(status)} `,
+      );
+      const unexpected = errors.filter((error) => !expected.some((note) => error.includes(note)));
+      expect(unexpected, "errors in the browser console").toEqual([]);
     },
     { auto: true },
   ],

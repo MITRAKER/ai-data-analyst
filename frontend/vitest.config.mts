@@ -13,9 +13,11 @@ export default defineConfig({
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
-    // Undo every mock and stubbed global after each test, so tests can't affect each other.
+    // Undo every mock, stubbed global and stubbed environment variable after
+    // each test, so tests can't affect each other.
     restoreMocks: true,
     unstubGlobals: true,
+    unstubEnvs: true,
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],

@@ -26,9 +26,13 @@ describe("proxy", () => {
     return /'nonce-([^']+)'/.exec(policy ?? "")?.[1] ?? "";
   }
 
+  function page(host = "localhost:3000") {
+    return new NextRequest(`http://${host}/`, { headers: { host } });
+  }
+
   it("gives every page request a new nonce, for Next.js and for the browser", () => {
-    const first = proxy(new NextRequest("http://localhost:3000/"));
-    const second = proxy(new NextRequest("http://localhost:3000/"));
+    const first = proxy(page());
+    const second = proxy(page());
     const policy = first.headers.get("content-security-policy");
     expect(nonceOf(policy).length).toBeGreaterThanOrEqual(32);
     expect(nonceOf(policy)).not.toBe(nonceOf(second.headers.get("content-security-policy")));
@@ -36,11 +40,24 @@ describe("proxy", () => {
     expect(first.headers.get("x-middleware-request-content-security-policy")).toBe(policy);
   });
 
+  it("refuses a page for a host name it doesn't know", async () => {
+    const refused = proxy(page("evil.example:3000"));
+    expect(refused.status).toBe(421);
+    expect(await refused.text()).toContain("add it to ALLOWED_HOSTS");
+    expect(proxy(page("127.0.0.1:3000")).status).toBe(200);
+  });
+
   it("runs for pages only, not for the API or static files", () => {
     const [rule] = config.matcher;
     const pattern = new RegExp(`^${rule?.source ?? ""}$`);
     expect(pattern.test("/")).toBe(true);
     expect(pattern.test("/api/ask")).toBe(false);
+    expect(pattern.test("/api")).toBe(false);
     expect(pattern.test("/_next/static/chunk.js")).toBe(false);
+    expect(pattern.test("/icon.svg")).toBe(false);
+    // Pages whose names only start like those still get a nonce.
+    expect(pattern.test("/apix")).toBe(true);
+    expect(pattern.test("/api-docs")).toBe(true);
+    expect(pattern.test("/icon.svgz")).toBe(true);
   });
 });

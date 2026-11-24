@@ -3,17 +3,20 @@
 
 import { MAX_UPLOAD_BYTES } from "@/lib/api";
 import { checkLength, forward } from "@/lib/backend";
+import { checkRead, checkWrite } from "@/lib/guard";
 
 /** The CSV file, plus room for the form fields around it. */
 const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + 64 * 1024;
 
-export function GET(request: Request): Promise<Response> {
-  return forward("/datasets", { signal: request.signal });
+export async function GET(request: Request): Promise<Response> {
+  return checkRead(request) ?? (await forward("/datasets", { signal: request.signal }));
 }
 
 export async function POST(request: Request): Promise<Response> {
   // Refuse a file that is too large before forwarding a single byte of it.
-  const refused = checkLength(request, MAX_UPLOAD_REQUEST_BYTES, "The file is larger than 50 MB.");
+  const refused =
+    checkWrite(request) ??
+    checkLength(request, MAX_UPLOAD_REQUEST_BYTES, "The file is larger than 50 MB.");
   if (refused) {
     return refused;
   }

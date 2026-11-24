@@ -46,6 +46,8 @@ services:
     build: ./frontend
     environment:
       BACKEND_URL: http://api:8000
+      # More host names the web UI answers to, besides localhost (see SECURITY.md).
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     ports:
       # Only this computer can open the app. Set WEB_PORT to use another port
       # than 3000; an empty WEB_PORT picks a free one (the smoke test does that).
@@ -58,6 +60,10 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    # On `docker compose down`, the web UI first lets open requests finish. An
+    # answer that is still streaming would keep it waiting, so Docker stops it
+    # after this long (Docker's default), and that answer ends with an error.
+    stop_grace_period: 10s
 
 volumes:
   data:

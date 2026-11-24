@@ -1,12 +1,16 @@
 // POST /api/ask -> the API's POST /ask/stream (the agent's steps, as Server-Sent Events)
 
 import { checkLength, errorResponse, forward } from "@/lib/backend";
+import { checkJson, checkWrite } from "@/lib/guard";
 
 /** A question of at most 2,000 characters, as JSON, fits easily. */
 const MAX_QUESTION_REQUEST_BYTES = 64 * 1024;
 
 export async function POST(request: Request): Promise<Response> {
-  const refused = checkLength(request, MAX_QUESTION_REQUEST_BYTES, "The question is too long.");
+  const refused =
+    checkWrite(request) ??
+    checkJson(request) ??
+    checkLength(request, MAX_QUESTION_REQUEST_BYTES, "The question is too long.");
   if (refused) {
     return refused;
   }
