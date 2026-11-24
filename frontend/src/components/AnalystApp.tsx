@@ -1,5 +1,7 @@
 "use client";
 
+import { useRef } from "react";
+
 import { ConversationView } from "@/components/ConversationView";
 import { DatasetPanel } from "@/components/DatasetPanel";
 import { QuestionForm } from "@/components/QuestionForm";
@@ -15,7 +17,17 @@ export function AnalystApp() {
   const datasets = useDatasets();
   const conversation = useConversation();
   const agent = useAgentStatus();
-  const canAsk = agent.kind === "ready" && datasets.names.length > 0;
+  const questionBox = useRef<HTMLTextAreaElement>(null);
+  // null until the list of datasets has arrived
+  const hasData = datasets.names === null ? null : datasets.names.length > 0;
+  const canAsk = agent.kind === "ready" && hasData === true;
+
+  function askSuggestion(question: string) {
+    conversation.ask(question);
+    // The suggestions disappear with the first question. Without this, the
+    // keyboard focus would be lost with the button that had it.
+    questionBox.current?.focus();
+  }
 
   return (
     <div className={styles.shell}>
@@ -28,9 +40,9 @@ export function AnalystApp() {
         <ConversationView
           banner={<StatusBanner agent={agent} />}
           turns={conversation.turns}
-          hasData={datasets.names.length > 0}
+          hasData={hasData}
           canAsk={canAsk && !conversation.busy}
-          onAsk={conversation.ask}
+          onAsk={askSuggestion}
         />
         <div className={styles.footer}>
           <div className={styles.column}>
@@ -39,6 +51,7 @@ export function AnalystApp() {
               busy={conversation.busy}
               onAsk={conversation.ask}
               onStop={conversation.stop}
+              inputRef={questionBox}
             />
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Plotly from "plotly.js-cartesian-dist-min";
+import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { AnalystApp } from "@/components/AnalystApp";
@@ -61,6 +62,27 @@ function liveResponse() {
     response,
     send: (event: Record<string, unknown>) => {
       send(event);
+    },
+  };
+}
+
+/** A response that the test sends later, by calling `answer`. */
+function later() {
+  const answers: ((response: Response) => void)[] = [];
+  return {
+    respond: () =>
+      new Promise<Response>((resolve) => {
+        answers.push(resolve);
+      }),
+    /** The requests made so far. */
+    count: () => answers.length,
+    /** Answer request number `index` (0 is the first). */
+    answer: async (index: number, response: Response) => {
+      await act(async () => {
+        answers[index]?.(response);
+        // Let the app read the answer and update the page.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
     },
   };
 }
@@ -167,6 +189,8 @@ describe("AnalystApp", () => {
       expect(suggestion).toBeEnabled();
     });
     await user.click(suggestion);
+    // The suggestions are gone, so the keyboard focus moves to the question box.
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
     await screen.findByText("West", { selector: "strong" });
     const body = fetch.mock.calls.find(([url]) => url === "/api/ask")?.[1]?.body;
     expect(body).toBe(JSON.stringify({ question: SUGGESTIONS[0] }));
@@ -195,7 +219,11 @@ describe("AnalystApp", () => {
     render(<AnalystApp />);
     expect(await screen.findByRole("status")).toHaveTextContent("can't be reached");
     expect(await screen.findByRole("alert")).toHaveTextContent("not reachable");
-    expect(screen.getByText("Start with some data")).toBeInTheDocument();
+    // Nobody knows yet whether there are datasets, so neither the list nor
+    // the welcome claims that there are none.
+    expect(screen.queryByText("No datasets yet.")).toBeNull();
+    expect(screen.queryByText("Loading datasets…")).toBeNull();
+    expect(screen.queryByText("Start with some data")).toBeNull();
   });
 });
 
@@ -243,21 +271,96 @@ describe("DatasetPanel", () => {
     expect(screen.getByText("TIMESTAMP")).toBeInTheDocument();
   });
 
-  it("ignores answers that arrive after the app is gone", async () => {
-    let finish: (response: Response) => void = () => undefined;
-    serve({
-      "GET /api/datasets": () =>
-        new Promise<Response>((resolve) => {
-          finish = resolve;
-        }),
-      "GET /api/agent/status": () => Promise.reject(new TypeError("offline")),
+  it("says the datasets are loading, and nothing more, until they arrive", async () => {
+    const lists = later();
+    serve({ "GET /api/datasets": lists.respond, "GET /api/agent/status": () => json(READY) });
+    render(<AnalystApp />);
+    expect(await screen.findByText("Loading datasets…")).toBeInTheDocument();
+    expect(screen.queryByText("Start with some data")).toBeNull();
+    expect(screen.queryByRole("button", { name: SUGGESTIONS[0] })).toBeNull();
+    await lists.answer(0, json({ datasets: [] }));
+    expect(screen.getByText("No datasets yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading datasets…")).toBeNull();
+  });
+
+  it("shows the dataset clicked last, even when an earlier click is answered later", async () => {
+    const sales = later();
+    withData({
+      "GET /api/datasets": () => json({ datasets: ["sales", "costs"] }),
+      "GET /api/datasets/sales": sales.respond,
+      "GET /api/datasets/costs": () => json({ ...INFO, name: "costs" }),
     });
-    const { unmount } = render(<AnalystApp />);
-    unmount();
-    await act(async () => {
-      finish(json({ detail: "late" }, 500));
-      await Promise.resolve();
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "sales" }));
+    await user.click(screen.getByRole("button", { name: "costs" }));
+    expect(await screen.findByRole("region", { name: "Details of costs" })).toBeInTheDocument();
+    await sales.answer(0, json(INFO));
+    expect(screen.getByRole("region", { name: "Details of costs" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Details of sales" })).toBeNull();
+  });
+
+  it("stays busy with an upload while a dataset is opened", async () => {
+    const uploads = later();
+    withData({
+      "GET /api/datasets/sales": () => json(INFO),
+      "POST /api/datasets": uploads.respond,
     });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText("Upload CSV"), new File(["a\n1\n"], "costs.csv"));
+    expect(await screen.findByText("Uploading…")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "sales" }));
+    await screen.findByRole("region", { name: "Details of sales" });
+    expect(screen.getByText("Uploading…")).toBeInTheDocument();
+    await uploads.answer(0, json({ ...INFO, name: "costs" }, 201));
+    expect(screen.getByText("Upload CSV")).toBeInTheDocument();
+  });
+});
+
+// React's strict mode runs each effect twice, as if the app appeared, went
+// away and appeared again. The first request's answer must then be ignored.
+describe("in strict mode, a late answer to the first request", () => {
+  it.each([
+    ["a list", json({ datasets: ["old"] })],
+    ["an error", json({ detail: "Old news." }, 500)],
+  ])("doesn't replace the datasets, when it is %s", async (_, late) => {
+    const lists = later();
+    serve({ "GET /api/datasets": lists.respond, "GET /api/agent/status": () => json(READY) });
+    render(
+      <StrictMode>
+        <AnalystApp />
+      </StrictMode>,
+    );
+    await vi.waitFor(() => {
+      expect(lists.count()).toBe(2);
+    });
+    await lists.answer(1, json({ datasets: ["new"] }));
+    expect(screen.getByRole("button", { name: "new" })).toBeInTheDocument();
+    await lists.answer(0, late);
+    expect(screen.getByRole("button", { name: "new" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "old" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("doesn't replace the agent's status", async () => {
+    const checks = later();
+    serve({
+      "GET /api/datasets": () => json({ datasets: ["sales"] }),
+      "GET /api/agent/status": checks.respond,
+    });
+    render(
+      <StrictMode>
+        <AnalystApp />
+      </StrictMode>,
+    );
+    await vi.waitFor(() => {
+      expect(checks.count()).toBe(2);
+    });
+    await checks.answer(1, json(READY));
+    expect(screen.getByRole("button", { name: SUGGESTIONS[0] })).toBeEnabled();
+    await checks.answer(0, json({ ready: false, detail: "Old news." }));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: SUGGESTIONS[0] })).toBeEnabled();
   });
 });

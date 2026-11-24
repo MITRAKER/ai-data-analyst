@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, type KeyboardEvent, type SubmitEvent } from "react";
+import {
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type RefObject,
+  type SubmitEvent,
+} from "react";
 
 import styles from "./ConversationView.module.css";
 
@@ -13,10 +19,12 @@ interface Props {
   busy: boolean;
   onAsk: (question: string) => void;
   onStop: () => void;
+  /** The text box, so that the app can move the keyboard focus to it. */
+  inputRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
 /** The box for a question. Enter sends it; Shift+Enter starts a new line. */
-export function QuestionForm({ canAsk, busy, onAsk, onStop }: Props) {
+export function QuestionForm({ canAsk, busy, onAsk, onStop, inputRef }: Props) {
   const [text, setText] = useState("");
   const question = text.trim();
   const ready = canAsk && !busy && question.length >= MIN_QUESTION_CHARS;
@@ -26,6 +34,15 @@ export function QuestionForm({ canAsk, busy, onAsk, onStop }: Props) {
     if (ready) {
       onAsk(question);
       setText("");
+    }
+  }
+
+  function stop(event: MouseEvent<HTMLButtonElement>) {
+    // Stop appears where Ask was, the moment the question starts. So the
+    // second click of a double-click on Ask lands on Stop, and would stop the
+    // question at once. `detail` counts the clicks: 2 is that second click.
+    if (event.detail <= 1) {
+      onStop();
     }
   }
 
@@ -42,6 +59,7 @@ export function QuestionForm({ canAsk, busy, onAsk, onStop }: Props) {
         Your question
       </label>
       <textarea
+        ref={inputRef}
         id="question"
         className={styles.input}
         value={text}
@@ -53,12 +71,14 @@ export function QuestionForm({ canAsk, busy, onAsk, onStop }: Props) {
         }}
         onKeyDown={sendOnEnter}
       />
+      {/* Different keys make two different buttons, so the keyboard focus on
+          Ask doesn't move over to Stop: pressing Enter twice can't stop. */}
       {busy ? (
-        <button type="button" className={styles.stop} onClick={onStop}>
+        <button key="stop" type="button" className={styles.stop} onClick={stop}>
           Stop
         </button>
       ) : (
-        <button type="submit" className={styles.send} disabled={!ready}>
+        <button key="ask" type="submit" className={styles.send} disabled={!ready}>
           Ask
         </button>
       )}

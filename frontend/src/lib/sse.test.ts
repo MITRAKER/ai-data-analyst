@@ -114,4 +114,30 @@ describe("readSse", () => {
     }
     expect(cancelled).toBe(true);
   });
+
+  it("says the connection broke when the stream fails during the answer", async () => {
+    let first = true;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (first) {
+          first = false;
+          controller.enqueue(new TextEncoder().encode("data: one\n\n"));
+        } else {
+          // What a browser does when the server goes away mid-answer.
+          controller.error(new TypeError("network error"));
+        }
+      },
+    });
+    const seen: string[] = [];
+    const reading = (async () => {
+      for await (const message of readSse(stream)) {
+        seen.push(message.data);
+      }
+    })();
+    await expect(reading).rejects.toBeInstanceOf(StreamError);
+    await expect(reading).rejects.toThrow(
+      "The connection broke during the answer. Please try again.",
+    );
+    expect(seen).toEqual(["one"]);
+  });
 });

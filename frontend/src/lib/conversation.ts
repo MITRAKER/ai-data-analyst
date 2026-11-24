@@ -16,6 +16,12 @@ export const MAX_TURNS = 50;
 /** The most steps kept for one question. The agent stops long before this. */
 export const MAX_STEPS_PER_TURN = 500;
 
+/**
+ * The most charts kept for one question. The agent can make at most 96 (12
+ * steps of up to 8 tool calls), so this only stops a broken server.
+ */
+export const MAX_CHARTS_PER_TURN = 100;
+
 /** A tool the agent ran: what it asked for, and (once it arrives) the result. */
 export interface ToolStep {
   kind: "tool";
@@ -69,9 +75,14 @@ function withStep(turn: Turn, step: Step): Turn {
   return turn.steps.length < MAX_STEPS_PER_TURN ? { ...turn, steps: [...turn.steps, step] } : turn;
 }
 
+/** At most MAX_CHARTS_PER_TURN charts. */
+function capped(charts: Chart[]): Chart[] {
+  return charts.slice(0, MAX_CHARTS_PER_TURN);
+}
+
 /** Attach a tool result to the call it answers. */
 function withResult(turn: Turn, result: ToolResultEvent): Turn {
-  const charts = result.chart ? [...turn.charts, result.chart] : turn.charts;
+  const charts = result.chart ? capped([...turn.charts, result.chart]) : turn.charts;
   const index = turn.steps.findLastIndex((step) => step.kind === "tool" && step.id === result.id);
   if (index === -1) {
     const orphan: ToolStep = { kind: "tool", id: result.id, name: result.name, input: {}, result };
@@ -98,9 +109,9 @@ export function applyEvent(turn: Turn, event: AgentEvent): Turn {
     case "tool_result":
       return withResult(turn, event);
     case "answer":
-      return { ...turn, status: "answered", answer: event.text, charts: event.charts };
+      return { ...turn, status: "answered", answer: event.text, charts: capped(event.charts) };
     case "error": {
-      const charts = event.charts.length > 0 ? event.charts : turn.charts;
+      const charts = event.charts.length > 0 ? capped(event.charts) : turn.charts;
       return { ...turn, status: "failed", error: event.message, charts };
     }
   }

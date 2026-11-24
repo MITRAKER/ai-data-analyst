@@ -5,6 +5,7 @@ import {
   conversationReducer,
   emptyConversation,
   ENDED_EARLY,
+  MAX_CHARTS_PER_TURN,
   MAX_STEPS_PER_TURN,
   MAX_TURNS,
   type Conversation,
@@ -127,6 +128,27 @@ describe("applyEvent", () => {
   it("uses the error's charts when it has some", () => {
     const failed = applyEvent(turn, { type: "error", message: "x", charts: [CHART, CHART] });
     expect(failed.charts).toHaveLength(2);
+  });
+
+  it("keeps at most MAX_CHARTS_PER_TURN charts", () => {
+    const many = Array.from({ length: MAX_CHARTS_PER_TURN + 5 }, () => CHART);
+    const answered = applyEvent(turn, { type: "answer", text: "", charts: many });
+    expect(answered.charts).toHaveLength(MAX_CHARTS_PER_TURN);
+    const failed = applyEvent(turn, { type: "error", message: "x", charts: many });
+    expect(failed.charts).toHaveLength(MAX_CHARTS_PER_TURN);
+    let current = answered;
+    for (let i = 0; i < 3; i += 1) {
+      current = applyEvent(current, {
+        type: "tool_result",
+        id: `t${String(i)}`,
+        name: "make_chart",
+        isError: false,
+        content: "",
+        display: {},
+        chart: CHART,
+      });
+    }
+    expect(current.charts).toHaveLength(MAX_CHARTS_PER_TURN);
   });
 
   it("keeps at most MAX_STEPS_PER_TURN steps", () => {

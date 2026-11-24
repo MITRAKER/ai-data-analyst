@@ -105,7 +105,7 @@ export async function* readSse(
     // Every read counts as at least one byte (even an empty one), so this
     // loop ends within `maxBytes` reads at the latest.
     for (let total = 0; total <= maxBytes;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readChunk(reader);
       if (done) {
         // An event the stream cut off before its blank line is dropped, as
         // the SSE standard says.
@@ -119,7 +119,23 @@ export async function* readSse(
     throw new StreamError("The answer from the server is too large.");
   } finally {
     // Stop the download if the reader stops early, for example when the
-    // user presses Stop. (Cancelling a finished stream does nothing.)
-    await reader.cancel();
+    // user presses Stop. Cancelling a finished stream does nothing, and
+    // cancelling a broken one only repeats the error that broke it.
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+/**
+ * The next chunk of the body. If the connection breaks during the answer, the
+ * browser only says "TypeError: network error". The connection did work at
+ * first, so the message says that it broke, not that the server can't be found.
+ */
+async function readChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  try {
+    return await reader.read();
+  } catch {
+    throw new StreamError("The connection broke during the answer. Please try again.");
   }
 }

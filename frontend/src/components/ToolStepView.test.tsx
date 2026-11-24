@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { MAX_OUTPUT_CHARS, ToolStepView } from "@/components/ToolStepView";
@@ -65,5 +65,13 @@ describe("ToolStepView", () => {
     show({ name: "future_tool", result: result({ name: "future_tool", content: "done" }) });
     expect(screen.getByText("future_tool")).toBeInTheDocument();
     expect(screen.getByText("done")).toBeInTheDocument();
+  });
+
+  it("shows a tool name such as __proto__ as plain text", () => {
+    for (const name of ["__proto__", "constructor", "toString"]) {
+      show({ name });
+      expect(screen.getByText(name)).toBeInTheDocument();
+      cleanup();
+    }
   });
 });

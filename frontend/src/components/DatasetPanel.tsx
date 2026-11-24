@@ -10,7 +10,7 @@ import styles from "./DatasetPanel.module.css";
 
 /** The uploaded datasets, an upload button, and details of the chosen dataset. */
 export function DatasetPanel({ datasets }: { datasets: Datasets }) {
-  const { names, selected, error, busy, upload, select } = datasets;
+  const { selected, error, uploading, upload } = datasets;
 
   function onFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -24,13 +24,13 @@ export function DatasetPanel({ datasets }: { datasets: Datasets }) {
     <aside className={styles.panel} aria-label="Datasets">
       <div className={styles.head}>
         <h2 className={styles.heading}>Datasets</h2>
-        <label className={styles.upload} aria-disabled={busy}>
-          {busy ? "Working…" : "Upload CSV"}
+        <label className={styles.upload} aria-disabled={uploading}>
+          {uploading ? "Uploading…" : "Upload CSV"}
           <input
             type="file"
             accept=".csv,text/csv"
             className="visually-hidden"
-            disabled={busy}
+            disabled={uploading}
             onChange={onFile}
           />
         </label>
@@ -40,28 +40,39 @@ export function DatasetPanel({ datasets }: { datasets: Datasets }) {
           {error}
         </p>
       )}
-      {names.length === 0 ? (
-        <p className={styles.muted}>No datasets yet.</p>
-      ) : (
-        <ul className={styles.list}>
-          {names.map((name) => (
-            <li key={name}>
-              <button
-                type="button"
-                className={styles.item}
-                aria-pressed={selected?.name === name}
-                onClick={() => {
-                  select(name);
-                }}
-              >
-                {name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <NameList datasets={datasets} />
       {selected && <DatasetDetails info={selected} />}
     </aside>
+  );
+}
+
+/** A button for each dataset, or why there are none to show. */
+function NameList({ datasets }: { datasets: Datasets }) {
+  const { names, selected, error, select } = datasets;
+  if (names === null) {
+    // Still loading. (If loading failed, the error above says so.)
+    return error === "" ? <p className={styles.muted}>Loading datasets…</p> : null;
+  }
+  if (names.length === 0) {
+    return <p className={styles.muted}>No datasets yet.</p>;
+  }
+  return (
+    <ul className={styles.list}>
+      {names.map((name) => (
+        <li key={name}>
+          <button
+            type="button"
+            className={styles.item}
+            aria-pressed={selected?.name === name}
+            onClick={() => {
+              select(name);
+            }}
+          >
+            {name}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

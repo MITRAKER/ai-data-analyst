@@ -1,56 +1,105 @@
 /**
  * A small Markdown renderer for the agent's answers.
  *
- * Claude writes its answers in Markdown: paragraphs, bullet lists, **bold**
- * and `code`. This file renders only that much, and it builds React elements,
- * never an HTML string. So text from the model, or from a CSV file that the
- * model quotes, always appears as text: `<script>` shows up as those
- * characters and can never run.
+ * Claude writes its answers in Markdown: paragraphs, bullet and numbered
+ * lists, **bold** and `code`. This file renders only that much, and it
+ * builds React elements, never an HTML string. So text from the model, or
+ * from a CSV file that the model quotes, always appears as text: `<script>`
+ * shows up as those characters and can never run.
  */
 
 import type { ReactNode } from "react";
 
-type Block =
-  { kind: "paragraph"; lines: string[] } | { kind: "bullets" | "numbers"; items: string[] };
+/** One item of a list, with the bullets indented under it. */
+interface ListItem {
+  text: string;
+  sub: string[];
+}
 
-const BULLET = /^\s*[-*•]\s+(.*)$/;
-const NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
+type Block =
+  | { kind: "paragraph"; lines: string[] }
+  | { kind: "bullets"; items: ListItem[] }
+  | { kind: "numbers"; items: ListItem[]; start: number };
+
+const BULLET = /^(\s*)[-*•]\s+(.*)$/;
+// At most 9 digits, so that the number always fits.
+const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
 const HEADING = /^#{1,6}\s+(.*)$/;
 // **bold** or `code`. The capture group keeps the matches in split()'s result.
 const INLINE = /(\*\*[^*]+\*\*|`[^`]+`)/;
 
+/** One line of the answer, without its marker. */
+interface Line {
+  kind: Block["kind"];
+  text: string;
+  /** The number the model wrote before a numbered line. */
+  number: number;
+  /** A bullet indented under the line above it. */
+  nested: boolean;
+}
+
 /** Which kind of block a line belongs to, and its text without the marker. */
-function classify(line: string): { kind: Block["kind"]; text: string } {
+function classify(line: string): Line {
   const bullet = BULLET.exec(line);
   if (bullet) {
-    return { kind: "bullets", text: bullet[1] ?? "" };
+    const nested = (bullet[1] ?? "").length >= 2;
+    return { kind: "bullets", text: bullet[2] ?? "", number: 0, nested };
   }
   const numbered = NUMBERED.exec(line);
   if (numbered) {
-    return { kind: "numbers", text: numbered[1] ?? "" };
+    return { kind: "numbers", text: numbered[2] ?? "", number: Number(numbered[1]), nested: false };
   }
-  return { kind: "paragraph", text: (HEADING.exec(line)?.[1] ?? line).trim() };
+  const text = (HEADING.exec(line)?.[1] ?? line).trim();
+  return { kind: "paragraph", text, number: 0, nested: false };
+}
+
+/** A new block that starts with this line. */
+function newBlock(line: Line): Block {
+  const item: ListItem = { text: line.text, sub: [] };
+  switch (line.kind) {
+    case "paragraph":
+      return { kind: "paragraph", lines: [line.text] };
+    case "bullets":
+      return { kind: "bullets", items: [item] };
+    case "numbers":
+      // A list keeps its numbers, even when blank lines split it into blocks.
+      return { kind: "numbers", items: [item], start: line.number };
+  }
+}
+
+/** Add the line to the block, if it belongs there. Returns false if it doesn't. */
+function addTo(block: Block, line: Line): boolean {
+  if (block.kind === "paragraph") {
+    if (line.kind === "paragraph") {
+      block.lines.push(line.text);
+    }
+    return line.kind === "paragraph";
+  }
+  // An indented bullet belongs to the list item above it.
+  const item = block.items.at(-1);
+  if (line.nested && item !== undefined) {
+    item.sub.push(line.text);
+    return true;
+  }
+  if (line.kind === block.kind) {
+    block.items.push({ text: line.text, sub: [] });
+  }
+  return line.kind === block.kind;
 }
 
 /** Group lines into blocks: a blank line, or a change of kind, starts a new block. */
 export function toBlocks(text: string): Block[] {
   const blocks: Block[] = [];
   let open = false; // false right after a blank line
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim() === "") {
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.trim() === "") {
       open = false;
       continue;
     }
-    const { kind, text: content } = classify(line);
+    const line = classify(raw);
     const last = blocks.at(-1);
-    if (open && last?.kind === kind) {
-      if (last.kind === "paragraph") {
-        last.lines.push(content);
-      } else {
-        last.items.push(content);
-      }
-    } else {
-      blocks.push(kind === "paragraph" ? { kind, lines: [content] } : { kind, items: [content] });
+    if (!open || last === undefined || !addTo(last, line)) {
+      blocks.push(newBlock(line));
     }
     open = true;
   }
@@ -73,24 +122,31 @@ export function renderInline(text: string): ReactNode[] {
     });
 }
 
+function renderItems(items: ListItem[]): ReactNode[] {
+  return items.map((item, i) => (
+    <li key={i}>
+      {renderInline(item.text)}
+      {item.sub.length > 0 && (
+        <ul>
+          {item.sub.map((text, j) => (
+            <li key={j}>{renderInline(text)}</li>
+          ))}
+        </ul>
+      )}
+    </li>
+  ));
+}
+
 function renderBlock(block: Block, key: number): ReactNode {
   switch (block.kind) {
     case "paragraph":
       return <p key={key}>{renderInline(block.lines.join(" "))}</p>;
     case "bullets":
-      return (
-        <ul key={key}>
-          {block.items.map((item, i) => (
-            <li key={i}>{renderInline(item)}</li>
-          ))}
-        </ul>
-      );
+      return <ul key={key}>{renderItems(block.items)}</ul>;
     case "numbers":
       return (
-        <ol key={key}>
-          {block.items.map((item, i) => (
-            <li key={i}>{renderInline(item)}</li>
-          ))}
+        <ol key={key} start={block.start}>
+          {renderItems(block.items)}
         </ol>
       );
   }

@@ -20,7 +20,8 @@ const PINNED_DISTANCE = 80;
 interface Props {
   banner: ReactNode;
   turns: Turn[];
-  hasData: boolean;
+  /** Are there datasets? null until the server has answered. */
+  hasData: boolean | null;
   canAsk: boolean;
   onAsk: (question: string) => void;
 }
@@ -32,14 +33,17 @@ interface Props {
 export function ConversationView({ banner, turns, hasData, canAsk, onAsk }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const count = useRef(turns.length);
+  const lastId = useRef(turns.at(-1)?.id);
 
   useEffect(() => {
     const element = box.current;
-    if (turns.length > count.current) {
-      pinned.current = true; // a new question: always show it
+    // A new question: always show it. (Compare ids, not the number of
+    // questions: that stops growing once MAX_TURNS questions are kept.)
+    const newest = turns.at(-1)?.id;
+    if (newest !== lastId.current) {
+      pinned.current = true;
     }
-    count.current = turns.length;
+    lastId.current = newest;
     if (element && pinned.current) {
       element.scrollTop = element.scrollHeight;
     }
@@ -72,6 +76,9 @@ export function ConversationView({ banner, turns, hasData, canAsk, onAsk }: Prop
 }
 
 function EmptyState({ hasData, canAsk, onAsk }: Omit<Props, "banner" | "turns">) {
+  if (hasData === null) {
+    return null; // still loading: show neither the welcome nor the questions
+  }
   if (!hasData) {
     return (
       <div className={styles.empty}>

@@ -5,11 +5,13 @@ import { isObject, isRows, isStringArray, type JsonObject } from "@/lib/json";
 
 import styles from "./ConversationView.module.css";
 
-const LABELS: Record<string, string> = {
-  query_database: "SQL query",
-  run_python: "Python",
-  make_chart: "Chart",
-};
+// A Map, not an object: the name comes over the network, and an object would
+// also "know" names such as "__proto__" or "constructor".
+const LABELS = new Map([
+  ["query_database", "SQL query"],
+  ["run_python", "Python"],
+  ["make_chart", "Chart"],
+]);
 
 /** The longest tool output shown on screen; the full text went to the agent. */
 export const MAX_OUTPUT_CHARS = 4_000;
@@ -21,7 +23,7 @@ export function ToolStepView({ step }: { step: ToolStep }) {
   return (
     <li className={styles.tool}>
       <div className={styles.toolHead}>
-        <span className={styles.badge}>{LABELS[step.name] ?? step.name}</span>
+        <span className={styles.badge}>{LABELS.get(step.name) ?? step.name}</span>
         {typeof caption === "string" && <span>{caption}</span>}
       </div>
       {typeof sql === "string" && (
