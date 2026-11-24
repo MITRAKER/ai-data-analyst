@@ -55,7 +55,7 @@ smoke: ## Smoke-test the image from `make docker` (Docker must be running)
 web-setup: ## Install the web UI's locked packages
 	$(NPM) ci
 
-web-check: ## Every check that CI runs on the web UI's code
+web-check: ## Check the web UI's formatting, lint, types and unit tests
 	$(NPM) run check
 
 web-dev: ## Start the web UI on http://localhost:3000 (start the API with `make run`)
