@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx2
 import pytest
 from fastapi.testclient import TestClient
@@ -156,6 +158,80 @@ def test_ask_with_listed_datasets(sample_bytes: bytes) -> None:
 def test_ask_without_api_key_returns_503() -> None:
     api = TestClient(create_app(DataStore(":memory:")))  # the real client, but no key is set
     res = api.post("/ask", json={"question": "anything?"})
+    assert res.status_code == 503
+    assert "ANTHROPIC_API_KEY is not set" in res.json()["detail"]
+
+
+def test_agent_status_says_whether_the_agent_can_answer() -> None:
+    ready = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    assert ready.get("/agent/status").json() == {"ready": True, "detail": ""}
+    no_key = TestClient(create_app(DataStore(":memory:")))  # the real client, but no key
+    status = no_key.get("/agent/status").json()
+    assert status["ready"] is False
+    assert "ANTHROPIC_API_KEY is not set" in status["detail"]
+
+
+def sse_events(body: str) -> list[tuple[str, dict[str, object]]]:
+    """Parse a text/event-stream body into (event name, data) pairs."""
+    events: list[tuple[str, dict[str, object]]] = []
+    for block in body.split("\n\n"):
+        lines = [line for line in block.splitlines() if not line.startswith(":")]
+        if not lines:
+            continue
+        name = next(line.removeprefix("event: ") for line in lines if line.startswith("event: "))
+        data = "\n".join(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
+        events.append((name, json.loads(data)))
+    return events
+
+
+def test_ask_stream_sends_each_step_as_it_happens(sample_bytes: bytes) -> None:
+    llm = FakeLLM(
+        [
+            reply(
+                text("Let me count."),
+                tool_use("t1", "query_database", sql="SELECT COUNT(*) AS n FROM sales", purpose=""),
+            ),
+            reply(text("2,000 orders."), stop="end_turn"),
+        ]
+    )
+    res = ask_client(llm, sample_bytes).post("/ask/stream", json={"question": "How many?"})
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    assert res.headers["cache-control"] == "no-cache"
+    events = sse_events(res.text)
+    assert [name for name, _ in events] == ["note", "tool_call", "tool_result", "answer"]
+    # The event name is the event's type, and the data is the whole event.
+    assert all(name == data["type"] for name, data in events)
+    assert events[2][1]["display"] == {
+        "result": {"columns": ["n"], "rows": [[2000]], "row_count": 1, "truncated": False}
+    }
+    assert events[-1][1] == {"type": "answer", "text": "2,000 orders.", "charts": [], "steps": 2}
+
+
+def test_ask_stream_ends_with_an_error_event_when_the_run_fails(sample_bytes: bytes) -> None:
+    api = ask_client(FakeLLM([reply(stop="refusal")]), sample_bytes)
+    events = sse_events(api.post("/ask/stream", json={"question": "anything?"}).text)
+    assert events == [
+        (
+            "error",
+            {
+                "type": "error",
+                "message": "The model declined to answer this request.",
+                "charts": [],
+            },
+        )
+    ]
+
+
+def test_ask_stream_checks_the_request_before_streaming(sample_bytes: bytes) -> None:
+    # A request that can't succeed gets a plain HTTP error, never a stream.
+    api = ask_client(FakeLLM([]), sample_bytes)
+    unknown = api.post("/ask/stream", json={"question": "hi?", "datasets": ["nope"]})
+    assert unknown.status_code == 404
+    assert unknown.headers["content-type"] == "application/json"
+    assert api.post("/ask/stream", json={"question": "hi"}).status_code == 422
+    no_key = TestClient(create_app(DataStore(":memory:")))
+    res = no_key.post("/ask/stream", json={"question": "anything?"})
     assert res.status_code == 503
     assert "ANTHROPIC_API_KEY is not set" in res.json()["detail"]
 

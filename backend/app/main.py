@@ -6,19 +6,26 @@ Endpoints:
   GET  /datasets                   -> list uploaded datasets
   GET  /datasets/{name}            -> schema, row count and sample rows
   POST /query                      -> run one read-only SQL query
+  GET  /agent/status               -> can the agent answer questions?
   POST /ask                        -> ask the AI agent a question
+  POST /ask/stream                 -> the same, with each step sent as it happens
 
 The agent calls the same DataStore methods as its "tools".
+
+Browsers never call this API directly. The web UI's server forwards their
+requests (see frontend/src/app/api/), so the API needs no CORS settings and
+can stay on a private network.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
 
 from app import __version__
@@ -64,6 +71,13 @@ class AskResponse(TypedDict):
     answer: str
     charts: list[Chart]
     steps: list[AgentEvent]
+
+
+class AgentStatus(TypedDict):
+    """Whether the agent can answer questions, and if not, why."""
+
+    ready: bool
+    detail: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,21 +146,60 @@ def query(body: QueryRequest, request: Request) -> QueryPayload:
         raise HTTPException(400, str(exc)) from exc
 
 
-@router.post("/ask")
-def ask(body: AskRequest, request: Request) -> AskResponse:
-    """Run the agent to completion and return every step plus the final answer.
-
-    (A later step adds a streaming version so the UI can show steps live.)
-    """
+@router.get("/agent/status")
+def agent_status(request: Request) -> AgentStatus:
+    """Can the agent answer questions? If not, `detail` says why."""
     found = services(request)
     if found.llm is None:
-        raise HTTPException(503, f"Agent unavailable: {found.llm_problem}")
-    if body.datasets:
-        unknown = sorted(set(body.datasets) - set(found.store.list_tables()))
-        if unknown:
-            raise HTTPException(404, f"Unknown dataset(s): {unknown}")
-    agent = DataAnalystAgent(found.store, found.llm)
-    return summarize(list(agent.run(body.question, body.datasets)))
+        return AgentStatus(ready=False, detail=found.llm_problem)
+    return AgentStatus(ready=True, detail="")
+
+
+class AgentRun:
+    """A question that passed every check, ready for the agent to answer.
+
+    /ask and /ask/stream declare `Annotated[AgentRun, Depends()]`, so FastAPI
+    builds an AgentRun from the request before the endpoint runs. A question
+    the agent can't answer gets a plain HTTP error here, and a stream never
+    starts for it.
+    """
+
+    def __init__(self, body: AskRequest, request: Request) -> None:
+        found = services(request)
+        if found.llm is None:
+            raise HTTPException(503, f"Agent unavailable: {found.llm_problem}")
+        if body.datasets:
+            unknown = sorted(set(body.datasets) - set(found.store.list_tables()))
+            if unknown:
+                raise HTTPException(404, f"Unknown dataset(s): {unknown}")
+        self._agent = DataAnalystAgent(found.store, found.llm)
+        self._question = body.question
+        self._datasets = body.datasets
+
+    def events(self) -> Iterator[AgentEvent]:
+        """Run the agent, one event per step. The last one is an answer or an error."""
+        return self._agent.run(self._question, self._datasets)
+
+
+@router.post("/ask")
+def ask(run: Annotated[AgentRun, Depends()]) -> AskResponse:
+    """Run the agent to completion and return every step plus the final answer."""
+    return summarize(list(run.events()))
+
+
+@router.post("/ask/stream", response_class=EventSourceResponse)
+def ask_stream(run: Annotated[AgentRun, Depends()]) -> Iterator[ServerSentEvent]:
+    """Run the agent and send each step as a Server-Sent Event, as it happens.
+
+    Each event is named after its type (`tool_call`, `answer`, ...), and its
+    data is the event as JSON, the same as one item of `steps` from /ask. The
+    last event is always `answer` or `error`. While the agent waits for Claude,
+    FastAPI sends a `: ping` comment every 15 seconds, so that no proxy closes
+    the quiet connection. If the client disconnects, the agent stops after the
+    step it is on, so it doesn't keep spending API credits.
+    """
+    for event in run.events():
+        yield ServerSentEvent(data=event, event=event["type"])
 
 
 def summarize(events: list[AgentEvent]) -> AskResponse:
@@ -184,12 +237,6 @@ def create_app(store: DataStore | None = None, llm: LLMClient | None = None) -> 
         llm, llm_problem = llm_from_env()
     app = FastAPI(title="AI Data Analyst", version=__version__)
     app.state.services = Services(store=store, llm=llm, llm_problem=llm_problem)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
-        allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
-    )
     app.include_router(router)
     return app
 
