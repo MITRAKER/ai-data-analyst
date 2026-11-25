@@ -22,11 +22,14 @@ export function AnalystApp() {
   const hasData = datasets.names === null ? null : datasets.names.length > 0;
   const canAsk = agent.kind === "ready" && hasData === true;
 
-  function askSuggestion(question: string) {
+  function askSuggestion(question: string, fromKeyboard: boolean) {
     conversation.ask(question);
-    // The suggestions disappear with the first question. Without this, the
-    // keyboard focus would be lost with the button that had it.
-    questionBox.current?.focus();
+    // The suggestions disappear with the first question, and the keyboard
+    // focus would be lost with the button that had it. Not after a click or a
+    // tap, though: on a phone, the focus in the box would open the keyboard.
+    if (fromKeyboard) {
+      questionBox.current?.focus();
+    }
   }
 
   return (

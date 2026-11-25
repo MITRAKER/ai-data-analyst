@@ -28,67 +28,83 @@ function newRequest(counter: RefObject<number>): () => boolean {
 }
 
 /**
- * The names of all datasets, or null if a newer request was made meanwhile.
- * An older request that fails late is ignored too: the newer one decides.
+ * Ask for the names of all datasets, and show them, unless a newer request
+ * was made meanwhile. An older request that fails late is ignored too: the
+ * newer one decides.
  */
-async function newestNames(lists: RefObject<number>): Promise<string[] | null> {
+async function refreshNames(
+  lists: RefObject<number>,
+  setNames: (names: string[]) => void,
+): Promise<void> {
   const isNewest = newRequest(lists);
   try {
     const found = await listDatasets();
-    return isNewest() ? found : null;
+    if (isNewest()) {
+      setNames(found);
+    }
   } catch (reason) {
     if (isNewest()) {
       throw reason;
     }
-    return null;
   }
 }
 
-/** The uploaded datasets, the one the user is looking at, and how to add one. */
+/**
+ * The uploaded datasets, the one the user is looking at, and how to add one.
+ *
+ * The user can click a dataset, or upload a file, before the server has
+ * answered the last click. The newest choice wins:
+ * - a click shows its dataset, or its error, only if no dataset was opened
+ *   after it;
+ * - an upload opens its dataset, unless the user opened another one
+ *   meanwhile. (A dataset with the same name was just replaced, so the
+ *   upload's new version wins over a click on it.) An upload's error always
+ *   shows: the file wasn't added, whatever else happened meanwhile.
+ */
 export function useDatasets(): Datasets {
   const [names, setNames] = useState<string[] | null>(null);
   const [selected, setSelected] = useState<DatasetInfo | null>(null);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
   const lists = useRef(0); // the requests for the list of names
-  const shows = useRef(0); // the uploads, and the clicks on a dataset
+  const opens = useRef(0); // the clicks on a dataset, and the uploads that opened one
+  const clicked = useRef(""); // the name of the dataset clicked last
 
   useEffect(() => {
-    newestNames(lists).then(
-      (found) => {
-        if (found) {
-          setNames(found);
-        }
-      },
-      (reason: unknown) => {
-        setError(messageOf(reason));
-      },
-    );
+    refreshNames(lists, setNames).catch((reason: unknown) => {
+      setError(messageOf(reason));
+    });
   }, []);
 
-  /** Run `task`, and show the dataset it returns. Returns false if it failed. */
-  async function show(task: () => Promise<DatasetInfo>): Promise<boolean> {
-    const isNewest = newRequest(shows);
+  async function select(name: string): Promise<void> {
+    const isNewest = newRequest(opens);
+    clicked.current = name;
     setError("");
     try {
-      const info = await task();
+      const info = await getDataset(name);
       if (isNewest()) {
         setSelected(info);
       }
-      return true;
     } catch (reason) {
-      setError(messageOf(reason));
-      return false;
+      if (isNewest()) {
+        setError(messageOf(reason));
+      }
     }
   }
 
   async function upload(file: File): Promise<void> {
+    const opensBefore = opens.current;
     setUploading(true);
+    setError("");
     try {
-      const found = (await show(() => uploadDataset(file))) ? await newestNames(lists) : null;
-      if (found) {
-        setNames(found);
+      const info = await uploadDataset(file);
+      // Open it, unless the user clicked another dataset meanwhile.
+      if (opens.current === opensBefore || clicked.current === info.name) {
+        newRequest(opens); // so that answers to older clicks are ignored
+        setSelected(info);
+        setError(""); // an older click's error doesn't belong next to it
       }
+      await refreshNames(lists, setNames);
     } catch (reason) {
       setError(messageOf(reason));
     } finally {
@@ -102,6 +118,6 @@ export function useDatasets(): Datasets {
     error,
     uploading,
     upload: (file) => void upload(file),
-    select: (name) => void show(() => getDataset(name)),
+    select: (name) => void select(name),
   };
 }

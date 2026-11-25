@@ -12,6 +12,26 @@ function setup(props: Partial<Parameters<typeof QuestionForm>[0]> = {}) {
   return { onAsk, onStop, box: screen.getByRole("textbox", { name: "Your question" }) };
 }
 
+/** A form that is busy with an answer until Stop is pressed, as the app is. */
+function setupBusyUntilStop() {
+  const onAsk = vi.fn();
+  function Form() {
+    const [busy, setBusy] = useState(true);
+    return (
+      <QuestionForm
+        canAsk
+        busy={busy}
+        onAsk={onAsk}
+        onStop={() => {
+          setBusy(false);
+        }}
+      />
+    );
+  }
+  render(<Form />);
+  return { onAsk, box: screen.getByRole("textbox", { name: "Your question" }) };
+}
+
 /** A form that turns busy when a question is sent, as the app does. */
 function setupBusyAfterAsk() {
   const onStop = vi.fn();
@@ -87,14 +107,45 @@ describe("QuestionForm", () => {
     expect(onStop).toHaveBeenCalledTimes(2);
   });
 
-  it("doesn't leave the keyboard focus on Stop after Enter on Ask", async () => {
+  it("ignores the second click of a double-click on Stop, which lands on Ask", () => {
+    const { onAsk, box } = setupBusyUntilStop();
+    // The next question, typed while the agent was still working.
+    fireEvent.change(box, { target: { value: "And by month?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }), { detail: 1 });
+    const ask = screen.getByRole("button", { name: "Ask" });
+    fireEvent.click(ask, { detail: 2 });
+    expect(onAsk).not.toHaveBeenCalled();
+    expect(box).toHaveValue("And by month?");
+    // One click sends it.
+    fireEvent.click(ask, { detail: 1 });
+    expect(onAsk).toHaveBeenCalledWith("And by month?");
+  });
+
+  it("moves the keyboard focus to the box after Enter on Ask, not to Stop", async () => {
     const { box } = setupBusyAfterAsk();
     const user = userEvent.setup();
     await user.type(box, "Who sold most?");
     screen.getByRole("button", { name: "Ask" }).focus();
     await user.keyboard("{Enter}");
-    // Otherwise a second Enter would press Stop at once.
+    // On Stop, a second Enter would stop at once; on nothing, the focus is lost.
     expect(screen.getByRole("button", { name: "Stop" })).not.toHaveFocus();
+    expect(box).toHaveFocus();
+  });
+
+  it("moves the keyboard focus to the box after Space on Stop", async () => {
+    const { box } = setupBusyUntilStop();
+    const user = userEvent.setup();
+    screen.getByRole("button", { name: "Stop" }).focus();
+    await user.keyboard(" ");
+    expect(screen.getByRole("button", { name: "Ask" })).toBeInTheDocument();
+    expect(box).toHaveFocus();
+  });
+
+  it("leaves the focus alone after a click, which would open a phone's keyboard", async () => {
+    const { box } = setupBusyUntilStop();
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(screen.getByRole("button", { name: "Ask" })).toBeInTheDocument();
+    expect(box).not.toHaveFocus();
   });
 
   it("gives the app its text box, to move the focus there", () => {

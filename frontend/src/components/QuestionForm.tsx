@@ -23,6 +23,27 @@ interface Props {
   inputRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
+/**
+ * Check a click on Ask or Stop. Stop appears where Ask was, the moment the
+ * question starts, and Ask comes back when it ends. So the second click of a
+ * double-click on one button lands on the other. `detail` counts the clicks:
+ * 2 is that second click, which both buttons ignore. 0 is a press of Enter or
+ * Space: the button is about to go away, so the keyboard focus moves to the
+ * text box first.
+ *
+ * @returns whether the button may do its job.
+ */
+function acceptClick(event: MouseEvent<HTMLButtonElement>): boolean {
+  if (event.detail > 1) {
+    event.preventDefault(); // on Ask: don't send
+    return false;
+  }
+  if (event.detail === 0) {
+    event.currentTarget.form?.querySelector("textarea")?.focus();
+  }
+  return true;
+}
+
 /** The box for a question. Enter sends it; Shift+Enter starts a new line. */
 export function QuestionForm({ canAsk, busy, onAsk, onStop, inputRef }: Props) {
   const [text, setText] = useState("");
@@ -38,10 +59,7 @@ export function QuestionForm({ canAsk, busy, onAsk, onStop, inputRef }: Props) {
   }
 
   function stop(event: MouseEvent<HTMLButtonElement>) {
-    // Stop appears where Ask was, the moment the question starts. So the
-    // second click of a double-click on Ask lands on Stop, and would stop the
-    // question at once. `detail` counts the clicks: 2 is that second click.
-    if (event.detail <= 1) {
+    if (acceptClick(event)) {
       onStop();
     }
   }
@@ -78,7 +96,13 @@ export function QuestionForm({ canAsk, busy, onAsk, onStop, inputRef }: Props) {
           Stop
         </button>
       ) : (
-        <button key="ask" type="submit" className={styles.send} disabled={!ready}>
+        <button
+          key="ask"
+          type="submit"
+          className={styles.send}
+          disabled={!ready}
+          onClick={acceptClick}
+        >
           Ask
         </button>
       )}

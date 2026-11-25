@@ -52,6 +52,24 @@ describe("toBlocks", () => {
     ]);
   });
 
+  it("compares the indent with the list's own items, not with the margin", () => {
+    // A whole list indented by two spaces: its items stay side by side.
+    expect(toBlocks("Notes:\n  - one\n  - two")).toEqual([
+      { kind: "paragraph", lines: ["Notes:"] },
+      { kind: "bullets", items: [item("one"), item("two")] },
+    ]);
+    expect(toBlocks("  - a\n    - a1\n  - b")).toEqual([
+      { kind: "bullets", items: [item("a", ["a1"]), item("b")] },
+    ]);
+    // After a blank line, an indented list starts again from its own items.
+    expect(toBlocks("1. a\n\n   - x\n   - y")).toEqual([
+      { kind: "numbers", items: [item("a")], start: 1 },
+      { kind: "bullets", items: [item("x"), item("y")] },
+    ]);
+    // A tab counts as four spaces.
+    expect(toBlocks("- a\n\t- a1")).toEqual([{ kind: "bullets", items: [item("a", ["a1"])] }]);
+  });
+
   it("returns nothing for empty text", () => {
     expect(toBlocks("\n  \n")).toEqual([]);
   });

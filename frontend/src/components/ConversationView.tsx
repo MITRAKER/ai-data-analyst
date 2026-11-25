@@ -23,7 +23,8 @@ interface Props {
   /** Are there datasets? null until the server has answered. */
   hasData: boolean | null;
   canAsk: boolean;
-  onAsk: (question: string) => void;
+  /** Ask a suggested question. `fromKeyboard`: the button was pressed with Enter or Space. */
+  onAsk: (question: string, fromKeyboard: boolean) => void;
 }
 
 /**
@@ -100,8 +101,8 @@ function EmptyState({ hasData, canAsk, onAsk }: Omit<Props, "banner" | "turns">)
             <button
               type="button"
               disabled={!canAsk}
-              onClick={() => {
-                onAsk(question);
+              onClick={(event) => {
+                onAsk(question, event.detail === 0); // 0 clicks: a key pressed it
               }}
             >
               {question}

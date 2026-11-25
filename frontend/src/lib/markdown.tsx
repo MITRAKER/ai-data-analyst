@@ -23,7 +23,7 @@ type Block =
 
 const BULLET = /^(\s*)[-*•]\s+(.*)$/;
 // At most 9 digits, so that the number always fits.
-const NUMBERED = /^\s*(\d{1,9})[.)]\s+(.*)$/;
+const NUMBERED = /^(\s*)(\d{1,9})[.)]\s+(.*)$/;
 const HEADING = /^#{1,6}\s+(.*)$/;
 // **bold** or `code`. The capture group keeps the matches in split()'s result.
 const INLINE = /(\*\*[^*]+\*\*|`[^`]+`)/;
@@ -34,23 +34,28 @@ interface Line {
   text: string;
   /** The number the model wrote before a numbered line. */
   number: number;
-  /** A bullet indented under the line above it. */
-  nested: boolean;
+  /** How many spaces come before the marker of a list line (a tab counts as 4). */
+  indent: number;
+}
+
+/** The width of the spaces before a marker. */
+function widthOf(spaces = ""): number {
+  return spaces.replaceAll("\t", "    ").length;
 }
 
 /** Which kind of block a line belongs to, and its text without the marker. */
 function classify(line: string): Line {
   const bullet = BULLET.exec(line);
   if (bullet) {
-    const nested = (bullet[1] ?? "").length >= 2;
-    return { kind: "bullets", text: bullet[2] ?? "", number: 0, nested };
+    return { kind: "bullets", text: bullet[2] ?? "", number: 0, indent: widthOf(bullet[1]) };
   }
   const numbered = NUMBERED.exec(line);
   if (numbered) {
-    return { kind: "numbers", text: numbered[2] ?? "", number: Number(numbered[1]), nested: false };
+    const number = Number(numbered[2]);
+    return { kind: "numbers", text: numbered[3] ?? "", number, indent: widthOf(numbered[1]) };
   }
   const text = (HEADING.exec(line)?.[1] ?? line).trim();
-  return { kind: "paragraph", text, number: 0, nested: false };
+  return { kind: "paragraph", text, number: 0, indent: 0 };
 }
 
 /** A new block that starts with this line. */
@@ -67,17 +72,20 @@ function newBlock(line: Line): Block {
   }
 }
 
-/** Add the line to the block, if it belongs there. Returns false if it doesn't. */
-function addTo(block: Block, line: Line): boolean {
+/**
+ * Add the line to the block, if it belongs there. Returns false if it doesn't.
+ * A `nested` line is a bullet indented further than the items of the list.
+ */
+function addTo(block: Block, line: Line, nested: boolean): boolean {
   if (block.kind === "paragraph") {
     if (line.kind === "paragraph") {
       block.lines.push(line.text);
     }
     return line.kind === "paragraph";
   }
-  // An indented bullet belongs to the list item above it.
+  // A bullet indented further than the list's items belongs to the item above it.
   const item = block.items.at(-1);
-  if (line.nested && item !== undefined) {
+  if (nested && item !== undefined) {
     item.sub.push(line.text);
     return true;
   }
@@ -91,6 +99,7 @@ function addTo(block: Block, line: Line): boolean {
 export function toBlocks(text: string): Block[] {
   const blocks: Block[] = [];
   let open = false; // false right after a blank line
+  let indent = 0; // how far the first line of the last block is indented
   for (const raw of text.split(/\r?\n/)) {
     if (raw.trim() === "") {
       open = false;
@@ -98,8 +107,11 @@ export function toBlocks(text: string): Block[] {
     }
     const line = classify(raw);
     const last = blocks.at(-1);
-    if (!open || last === undefined || !addTo(last, line)) {
+    // Two more spaces than the list's items put a bullet under the item above.
+    const nested = line.kind === "bullets" && line.indent >= indent + 2;
+    if (!open || last === undefined || !addTo(last, line, nested)) {
       blocks.push(newBlock(line));
+      indent = line.indent;
     }
     open = true;
   }

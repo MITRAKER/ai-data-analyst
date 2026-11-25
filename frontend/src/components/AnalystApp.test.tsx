@@ -66,6 +66,13 @@ function liveResponse() {
   };
 }
 
+/** Let React finish the updates and effects under way, such as scrolling. */
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+}
+
 /** A response that the test sends later, by calling `answer`. */
 function later() {
   const answers: ((response: Response) => void)[] = [];
@@ -171,13 +178,16 @@ describe("AnalystApp", () => {
     fireEvent.scroll(view);
     live.send({ type: "note", text: "First step." });
     await screen.findByText("First step.");
+    await settle(); // React scrolls just after it shows a step, so wait for that
     expect(view.scrollTop).toBe(100);
 
     view.scrollTop = 600; // and back down to the bottom
     fireEvent.scroll(view);
     live.send({ type: "note", text: "Second step." });
     await screen.findByText("Second step.");
-    expect(view.scrollTop).toBe(1000);
+    await vi.waitFor(() => {
+      expect(view.scrollTop).toBe(1000);
+    });
   });
 
   it("asks a suggested question", async () => {
@@ -189,11 +199,27 @@ describe("AnalystApp", () => {
       expect(suggestion).toBeEnabled();
     });
     await user.click(suggestion);
-    // The suggestions are gone, so the keyboard focus moves to the question box.
-    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
+    // After a click, the focus stays out of the box: on a phone, it would open the keyboard.
+    expect(screen.getByRole("textbox", { name: "Your question" })).not.toHaveFocus();
     await screen.findByText("West", { selector: "strong" });
     const body = fetch.mock.calls.find(([url]) => url === "/api/ask")?.[1]?.body;
     expect(body).toBe(JSON.stringify({ question: SUGGESTIONS[0] }));
+  });
+
+  it("moves the keyboard focus to the question box after Enter on a suggestion", async () => {
+    withData({ "POST /api/ask": () => sseResponse(...RUN) });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    const suggestion = await screen.findByRole("button", { name: SUGGESTIONS[0] });
+    await vi.waitFor(() => {
+      expect(suggestion).toBeEnabled();
+    });
+    suggestion.focus();
+    await user.keyboard("{Enter}");
+    // The suggestions are gone, and the focus would have gone with them.
+    await screen.findByText("West", { selector: "strong" });
+    expect(screen.queryByRole("button", { name: SUGGESTIONS[0] })).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
   });
 
   it("explains why the agent can't answer yet", async () => {
@@ -283,7 +309,10 @@ describe("DatasetPanel", () => {
     expect(screen.queryByText("Loading datasets…")).toBeNull();
   });
 
-  it("shows the dataset clicked last, even when an earlier click is answered later", async () => {
+  it.each([
+    ["its details", json(INFO)],
+    ["an error", json({ detail: "Unknown dataset: sales" }, 404)],
+  ])("shows the dataset clicked last, when an earlier click gets %s later", async (_, late) => {
     const sales = later();
     withData({
       "GET /api/datasets": () => json({ datasets: ["sales", "costs"] }),
@@ -295,9 +324,117 @@ describe("DatasetPanel", () => {
     await user.click(await screen.findByRole("button", { name: "sales" }));
     await user.click(screen.getByRole("button", { name: "costs" }));
     expect(await screen.findByRole("region", { name: "Details of costs" })).toBeInTheDocument();
-    await sales.answer(0, json(INFO));
+    await sales.answer(0, late);
     expect(screen.getByRole("region", { name: "Details of costs" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Details of sales" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows the new version of a dataset uploaded again, even if it was clicked meanwhile", async () => {
+    const uploads = later();
+    withData({
+      "GET /api/datasets/sales": () => json(INFO),
+      "POST /api/datasets": uploads.respond,
+    });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText("Upload CSV"), new File(["a\n1\n"], "sales.csv"));
+    // The click gets the old version: the upload hasn't replaced it yet.
+    await user.click(await screen.findByRole("button", { name: "sales" }));
+    expect(await screen.findByText("2,000 rows, 2 columns")).toBeInTheDocument();
+    await uploads.answer(0, json({ ...INFO, row_count: 5 }, 201));
+    expect(screen.getByText("5 rows, 2 columns")).toBeInTheDocument();
+  });
+
+  it("keeps the dataset opened during an upload, and still shows the upload's error", async () => {
+    const uploads = later();
+    withData({
+      "GET /api/datasets/sales": () => json(INFO),
+      "POST /api/datasets": uploads.respond,
+    });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText("Upload CSV"), new File(["a\n1\n"], "costs.csv"));
+    await user.click(await screen.findByRole("button", { name: "sales" }));
+    await screen.findByRole("region", { name: "Details of sales" });
+    await uploads.answer(0, json({ ...INFO, name: "costs" }, 201));
+    expect(screen.getByRole("region", { name: "Details of sales" })).toBeInTheDocument();
+
+    await user.upload(screen.getByLabelText("Upload CSV"), new File([""], "empty.csv"));
+    await user.click(screen.getByRole("button", { name: "sales" }));
+    await uploads.answer(1, json({ detail: "The file has no rows." }, 400));
+    expect(screen.getByRole("alert")).toHaveTextContent("The file has no rows.");
+  });
+
+  it("still opens a dataset clicked before an upload that fails", async () => {
+    const costs = later();
+    withData({
+      "GET /api/datasets": () => json({ datasets: ["sales", "costs"] }),
+      "GET /api/datasets/costs": costs.respond,
+      "POST /api/datasets": () => json({ detail: "The file has no rows." }, 400),
+    });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "costs" }));
+    await user.upload(screen.getByLabelText("Upload CSV"), new File([""], "empty.csv"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The file has no rows.");
+    await costs.answer(0, json({ ...INFO, name: "costs" }));
+    expect(screen.getByRole("region", { name: "Details of costs" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "costs", pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("The file has no rows.");
+    // The next click clears the error.
+    await user.click(screen.getByRole("button", { name: "costs" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("doesn't let a late answer to an earlier click replace an uploaded dataset", async () => {
+    const sales = later();
+    withData({
+      "GET /api/datasets/sales": sales.respond,
+      "POST /api/datasets": () => json({ ...INFO, name: "costs" }, 201),
+    });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "sales" }));
+    await user.upload(screen.getByLabelText("Upload CSV"), new File(["a\n1\n"], "costs.csv"));
+    expect(await screen.findByRole("region", { name: "Details of costs" })).toBeInTheDocument();
+    await sales.answer(0, json(INFO));
+    expect(screen.getByRole("region", { name: "Details of costs" })).toBeInTheDocument();
+  });
+
+  it("opens an uploaded dataset over an earlier click, and clears that click's error", async () => {
+    const sales = later();
+    const uploads = later();
+    withData({ "GET /api/datasets/sales": sales.respond, "POST /api/datasets": uploads.respond });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "sales" }));
+    await user.upload(screen.getByLabelText("Upload CSV"), new File(["a\n1\n"], "costs.csv"));
+    await sales.answer(0, json({ detail: "Unknown dataset: sales" }, 404));
+    expect(screen.getByRole("alert")).toHaveTextContent("Unknown dataset: sales");
+    await uploads.answer(0, json({ ...INFO, name: "costs" }, 201));
+    expect(screen.getByRole("region", { name: "Details of costs" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the list fetched after an upload, when the first list arrives later", async () => {
+    const lists = later();
+    let requests = 0;
+    serve({
+      "GET /api/datasets": () => {
+        requests += 1;
+        return requests === 1 ? lists.respond() : json({ datasets: ["sales"] });
+      },
+      "GET /api/agent/status": () => json(READY),
+      "POST /api/datasets": () => json(INFO, 201),
+    });
+    render(<AnalystApp />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText("Upload CSV"), new File(["a\n1\n"], "sales.csv"));
+    expect(await screen.findByRole("button", { name: "sales" })).toBeInTheDocument();
+    await lists.answer(0, json({ datasets: [] }));
+    expect(screen.getByRole("button", { name: "sales" })).toBeInTheDocument();
+    expect(screen.queryByText("No datasets yet.")).toBeNull();
   });
 
   it("stays busy with an upload while a dataset is opened", async () => {
