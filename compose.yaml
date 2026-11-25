@@ -29,6 +29,9 @@ services:
       AGENT_EFFORT: ${AGENT_EFFORT:-}
       # Keep the uploaded data in the "data" volume, so it survives a restart.
       DUCKDB_PATH: /data/analyst.duckdb
+      # The web UI's server calls the API by its name here, "api". The API
+      # answers only to localhost and the names in ALLOWED_HOSTS.
+      ALLOWED_HOSTS: api
     volumes:
       - data:/data
     # Defense in depth, as in the Python sandbox: the container can't change

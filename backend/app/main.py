@@ -49,9 +49,9 @@ MAX_QUERY_ROWS = 5_000
 MAX_QUESTION_CHARS = 2_000
 MAX_DATASETS_PER_QUESTION = 50
 
-# The host names the API always answers to: this computer's own, and "api",
-# its name inside Docker Compose, where the web UI's server calls it by it.
-LOCAL_HOSTS: Final = ("localhost", "127.0.0.1", "[::1]", "api")
+# The host names the API always answers to: this computer's own. Docker Compose
+# adds "api", the name the web UI's server calls it by, with ALLOWED_HOSTS.
+LOCAL_HOSTS: Final = ("localhost", "127.0.0.1", "[::1]")
 # A host name, or an IPv6 address in brackets, and an optional port.
 HOST_HEADER: Final = re.compile(r"(\[[0-9a-f:.]+\]|[a-z0-9._-]+)(?::\d{1,5})?", re.IGNORECASE)
 
@@ -137,10 +137,11 @@ def sent_from_other_site(request: Request, host: str) -> bool:
 class BrowserCheck:
     """Refuses a request that another website could make the user's browser send.
 
-    Every route depends on this check. Browsers never need to call the API: the
-    web UI's server does, from Node.js. Still, the API may run on its own, with
-    `make run`, and a browser on this computer could then reach it. So, like
-    the web UI's server (frontend/src/lib/guard.ts), the API refuses:
+    Every route but /health depends on this check. Browsers never need to call
+    the API: the web UI's server does, from Node.js. Still, the API may run on
+    its own, with `make run`, and a browser on this computer could then reach
+    it. So, like the web UI's server (frontend/src/lib/guard.ts), the API
+    refuses:
 
     - a host name it doesn't know (421). Another website could point its own
       name at this computer (DNS rebinding), and its page could then read the
@@ -158,18 +159,21 @@ class BrowserCheck:
         if found is None or found.group(1) not in services(request).hosts:
             raise HTTPException(
                 421,
-                "This server only answers to localhost. To use another name, add it to "
-                "ALLOWED_HOSTS.",
+                "The API only answers to localhost. To call it by another name, add that "
+                "name to the API's ALLOWED_HOSTS.",
             )
         # Reading needs no more checks: another website's page can't read the answer.
         if request.method not in {"GET", "HEAD"} and sent_from_other_site(request, host):
             raise HTTPException(403, "Requests from other websites are not allowed.")
 
 
+# /health holds no data, so it answers to any host name: a health check may
+# call the API by its IP address. Every other route checks the request first.
+probes = APIRouter()
 router = APIRouter(dependencies=[Depends(BrowserCheck)])
 
 
-@router.get("/health")
+@probes.get("/health")
 def health() -> dict[str, str]:
     """Is the server up?"""
     return {"status": "ok"}
@@ -314,6 +318,7 @@ def create_app(store: DataStore | None = None, llm: LLMClient | None = None) -> 
     app = FastAPI(title="AI Data Analyst", version=__version__)
     hosts = allowed_hosts(os.getenv("ALLOWED_HOSTS", ""))
     app.state.services = Services(store=store, llm=llm, llm_problem=llm_problem, hosts=hosts)
+    app.include_router(probes)
     app.include_router(router)
     return app
 

@@ -83,6 +83,10 @@ code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
 code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --header "Host: evil.example" "$url/datasets")"
 [ "$code" = "421" ] || fail "a request for another host name got HTTP $code, not 421"
+# /health holds no data, so a health check may call the API by its IP address.
+curl --fail --silent --show-error --output /dev/null \
+  --header "Host: 10.0.0.5:8000" "$url/health" ||
+  fail "the health check refused another host name"
 
 echo "Running Python in the sandbox"
 printed="$(docker exec "$container" python -c '

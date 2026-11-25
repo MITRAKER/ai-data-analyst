@@ -152,9 +152,9 @@ def test_allows_the_docs_page_programs_and_reading(client: TestClient) -> None:
     ["evil.example", "evil.example:8000", "localhost.evil.example", "localhost:80:80", "[::2]", ""],
 )
 def test_refuses_host_names_it_doesnt_know(client: TestClient, host: str) -> None:
-    res = client.get("/health", headers={"host": host})
+    res = client.get("/datasets", headers={"host": host})
     assert res.status_code == 421
-    assert "add it to ALLOWED_HOSTS" in res.json()["detail"]
+    assert "add that name to the API's ALLOWED_HOSTS" in res.json()["detail"]
     assert client.post("/datasets", files=CSV_FILE, headers={"host": host}).status_code == 421
 
 
@@ -162,18 +162,32 @@ def test_refuses_host_names_it_doesnt_know(client: TestClient, host: str) -> Non
     "host", ["localhost", "localhost:8000", "LocalHost:8000", "127.0.0.1:8000", "[::1]:8000"]
 )
 def test_answers_to_this_computers_names(client: TestClient, host: str) -> None:
-    assert client.get("/health", headers={"host": host}).status_code == 200
+    assert client.get("/datasets", headers={"host": host}).status_code == 200
 
 
 def test_answers_to_the_names_in_allowed_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALLOWED_HOSTS", " Analyst.example, ,10.0.0.5 ")
     api = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
     for host in ["analyst.example", "analyst.example:8000", "10.0.0.5:8000", "localhost:8000"]:
-        assert api.get("/health", headers={"host": host}).status_code == 200
-    # "api" is the API's name inside Docker Compose, where the web UI's server calls it.
-    assert api.get("/health", headers={"host": "api:8000"}).status_code == 200
-    assert api.get("/health").status_code == 421  # testserver is no longer listed
-    assert allowed_hosts("") == {"localhost", "127.0.0.1", "[::1]", "api"}
+        assert api.get("/datasets", headers={"host": host}).status_code == 200
+    assert api.get("/datasets").status_code == 421  # testserver is no longer listed
+    assert allowed_hosts("") == {"localhost", "127.0.0.1", "[::1]"}
+
+
+def test_answers_to_api_only_when_compose_lists_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # "api" is the API's name inside Docker Compose. Elsewhere, another website
+    # could answer for that name, so only compose.yaml adds it.
+    monkeypatch.delenv("ALLOWED_HOSTS")
+    alone = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    assert alone.get("/datasets", headers={"host": "api:8000"}).status_code == 421
+    monkeypatch.setenv("ALLOWED_HOSTS", "api")  # what compose.yaml sets
+    in_compose = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    assert in_compose.get("/datasets", headers={"host": "api:8000"}).status_code == 200
+
+
+def test_health_answers_to_any_host_name(client: TestClient) -> None:
+    # It holds no data, and a health check may call the API by its IP address.
+    assert client.get("/health", headers={"host": "10.0.0.5:8000"}).json() == {"status": "ok"}
 
 
 # ---------- /ask ----------
