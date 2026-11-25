@@ -126,9 +126,18 @@ describe("requests from other websites, or for other host names", () => {
     expect(await refused[0]?.json()).toEqual({
       detail: "Requests from other websites are not allowed.",
     });
-    // DNS rebinding: the request names the other site as its host.
-    const elsewhere = { host: "evil.example:3000", origin: "http://evil.example:3000" };
-    expect((await ask(post("/api/ask", "{}", elsewhere))).status).toBe(421);
+    // DNS rebinding: the request names the other site as its host. The page is
+    // then the same origin as the request, so only the host name gives it away.
+    const elsewhere = {
+      host: "evil.example:3000",
+      origin: "http://evil.example:3000",
+      "sec-fetch-site": "same-origin",
+    };
+    const writes = [
+      await ask(post("/api/ask", "{}", elsewhere)),
+      await upload(post("/api/datasets", "--x\r\n...", { ...form, ...elsewhere })),
+    ];
+    expect(writes.map((response) => response.status)).toEqual([421, 421]);
     // Every route that reads checks the host name too.
     function rebound(path: string) {
       return new Request(`http://evil.example${path}`, { headers: { host: "evil.example" } });

@@ -127,8 +127,9 @@ code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --header "Origin: https://evil.example" --header "Sec-Fetch-Site: cross-site" \
   --form "file=@data/sample_sales.csv;filename=sales.csv" "$url/api/datasets")"
 [ "$code" = "403" ] || fail "an upload from another website got HTTP $code, not 403"
-# DNS rebinding: another website's name, pointed at this computer. The page
-# and every route of the web UI's server must refuse it, a prefetch too.
+# DNS rebinding: another website's name, pointed at this computer. The page,
+# its prefetches and every route of the web UI's server but /api/health (which
+# holds no data) must refuse it.
 for path in / /api/datasets /api/datasets/sample_sales /api/agent/status; do
   code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     --header "Host: evil.example" "$url$path")"
@@ -139,6 +140,17 @@ for prefetch in "Next-Router-Prefetch: 1" "Purpose: prefetch"; do
     --header "Host: evil.example" --header "$prefetch" "$url/")"
   [ "$code" = "421" ] || fail "a prefetch ($prefetch) for another host name got HTTP $code"
 done
+# Under the rebound name, the page is the same origin as the request, so only
+# the host name gives away an upload or a question.
+same_origin=(--header "Host: evil.example" --header "Origin: http://evil.example"
+  --header "Sec-Fetch-Site: same-origin")
+code="$(curl --silent --output /dev/null --write-out '%{http_code}' "${same_origin[@]}" \
+  --form "file=@data/sample_sales.csv;filename=planted.csv" "$url/api/datasets")"
+[ "$code" = "421" ] || fail "an upload for another host name got HTTP $code, not 421"
+code="$(curl --silent --output /dev/null --write-out '%{http_code}' "${same_origin[@]}" \
+  --header "Content-Type: application/json" --data '{"question": "Which region sold most?"}' \
+  "$url/api/ask")"
+[ "$code" = "421" ] || fail "a question for another host name got HTTP $code, not 421"
 # A name in ALLOWED_HOSTS works.
 curl --fail --silent --show-error --output /dev/null \
   --header "Host: analyst.example" "$url/api/datasets" ||
