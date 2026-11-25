@@ -801,10 +801,24 @@ of this step found two ways for a page on another site to use the app:
   and `[::1]`, and refuses any other name with 421 Misdirected Request. To open
   the app under another name, list it in the `ALLOWED_HOSTS` setting.
 
-`src/lib/guard.ts` holds both checks. Every API route calls them first, and
-`proxy.ts` checks the host name of every page. A browser test plays the other
-site: a page on another port uploads a file with `fetch()`, and the test checks
-that the server refused it.
+`src/lib/guard.ts` holds both checks. Every API route calls them first (all
+but `/api/health`, which only says that the server is up), and `proxy.ts`
+checks the host name of every page. A browser test plays the other site: a page
+on another port uploads a file with `fetch()`, and the test checks that the
+server refused it. If you put the app behind a reverse proxy, such as nginx,
+the proxy must pass on the `Host` header as the browser sent it.
+
+A second review found two gaps. First, `proxy.ts` skipped prefetches, the
+requests with which Next.js loads a page before you click its link. They got
+no host check, although their answers can be read like any page. Now every
+page request goes through it. Second, the API itself had no checks. In Docker
+Compose only the web server can reach it, but with `make run` it listens on
+`localhost:8000`, and your browser can reach it there too. Now the API has
+the same two checks: `BrowserCheck` in `backend/app/main.py`. FastAPI runs it
+before every route, because the router declares it as a dependency:
+`APIRouter(dependencies=[Depends(BrowserCheck)])`. Besides this computer's
+names, the API answers to `api`, its name inside Docker Compose, where the web
+server calls it.
 
 ### Every byte from the network is untrusted
 
@@ -859,12 +873,17 @@ React only shows the result.
   per event) and keeps the `AbortController` that the Stop button uses.
 - **Ids.** Every question gets an id, and every action carries it. A late event
   from a stopped question can't end up in the next one.
-- **The newest request wins.** Answers can arrive in any order. Each request
+- **The newest choice wins.** Answers can arrive in any order. Each request
   for the list of datasets, and each click on a dataset, gets a number, and
-  only the answer to the newest one is shown (`useDatasets.ts`). So a slow
-  answer to an older click can't replace a newer one. React's strict mode,
-  which runs every effect twice while you develop, makes this happen on every
-  page load, and a test checks it.
+  only the answer to the newest one is shown, even when that answer is an
+  error (`useDatasets.ts`). So a slow answer to an older click can't replace a
+  newer one. An upload follows its own rule: it opens its dataset, unless you
+  clicked another dataset while it ran, and its error always shows, because
+  the file wasn't added. If you clicked a dataset with the same name, the
+  upload still wins: that dataset was just replaced, and the upload's answer
+  holds the new version. React's strict mode, which runs every effect twice
+  while you develop, makes these races happen on every page load, and tests
+  play each of them.
 
 ### Charts: Plotly in the browser
 
@@ -1018,6 +1037,8 @@ someone changed on the way.
    `curl -H 'Origin: https://evil.example' -F file=@data/sample_sales.csv localhost:3000/api/datasets`.
    What does the server answer? Now send `-H 'Host: evil.example'` with a
    `GET` of `localhost:3000/api/datasets`. Which trick does each check stop?
+   Then start the API alone with `make run`, and try both on
+   `localhost:8000/datasets`.
 
 ### Words to know
 

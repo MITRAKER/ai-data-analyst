@@ -159,8 +159,20 @@ other websites out:
      so the browser treats the app as part of that site, and its page could
      read your data. Each request still carries that name in its `Host`
      header, so the server answers only to `localhost`, `127.0.0.1` and
-     `[::1]` (421 otherwise). To open the app under another name, add that
-     name to `ALLOWED_HOSTS`.
+     `[::1]` (421 otherwise). It checks every page, prefetches included, and
+     every route except `/api/health`, which only says that the server is up.
+     Static files, such as the page's scripts, hold no data, so they are not
+     checked. To open the app under another name, add that name to
+     `ALLOWED_HOSTS`. Behind a reverse proxy, the proxy must pass the `Host`
+     header on as the browser sent it, port included (in nginx,
+     `proxy_set_header Host $http_host;`, in Apache, `ProxyPreserveHost On`),
+     because the server compares it with the `Origin` header.
+
+   The API refuses both tricks too (`BrowserCheck` in `backend/app/main.py`),
+   for when it runs on its own, with `make run`, where your browser can reach
+   it: a POST from another website's page (403), and any host name but
+   `localhost`, `127.0.0.1`, `[::1]` and `api`, its name inside Docker
+   Compose (421). `ALLOWED_HOSTS` adds names to both servers.
 9. **Checked before use.** The page checks the shape of every response and every
    streamed event at run time before it uses them. Uploads and questions that
    are too large are refused by the web UI's server, from their

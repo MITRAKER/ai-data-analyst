@@ -8,6 +8,8 @@
 #
 # The image needs one setting: BACKEND_URL, the address of the Python API
 # (http://api:8000 in Compose). The browser never talks to the API itself.
+# ALLOWED_HOSTS lists more host names that the web UI answers to, besides
+# localhost, 127.0.0.1 and [::1] (see SECURITY.md).
 #
 # This is a multi-stage build, like the backend's. Stage 1 installs the
 # packages, stage 2 builds the app, and the final stage gets only the built

@@ -56,10 +56,12 @@ suggested questions. Without a key the app still runs, and the page tells you
 that the agent can't answer yet. Your data is kept in a Docker volume between
 restarts; `docker compose down --volumes` deletes it.
 
-The web UI answers only to this computer's own names: `localhost`, `127.0.0.1`
-and `[::1]`. To open it under another name that points to this computer, add
-that name to `ALLOWED_HOSTS` in `.env` ([SECURITY.md](SECURITY.md#the-web-ui)
-explains why).
+The web UI and the API answer only to this computer's own names: `localhost`,
+`127.0.0.1` and `[::1]`. To open the app under another name that points to this
+computer, add that name to `ALLOWED_HOSTS` in `.env`. Behind a reverse proxy,
+have the proxy pass on the `Host` header unchanged (in nginx,
+`proxy_set_header Host $http_host;`). [SECURITY.md](SECURITY.md#the-web-ui)
+explains why.
 
 ## Run it locally
 
