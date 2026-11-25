@@ -127,11 +127,17 @@ code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --header "Origin: https://evil.example" --header "Sec-Fetch-Site: cross-site" \
   --form "file=@data/sample_sales.csv;filename=sales.csv" "$url/api/datasets")"
 [ "$code" = "403" ] || fail "an upload from another website got HTTP $code, not 403"
-# DNS rebinding: another website's name, pointed at this computer.
-for path in / /api/datasets; do
+# DNS rebinding: another website's name, pointed at this computer. The page
+# and every route of the web UI's server must refuse it, a prefetch too.
+for path in / /api/datasets /api/datasets/sample_sales /api/agent/status; do
   code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     --header "Host: evil.example" "$url$path")"
   [ "$code" = "421" ] || fail "$path for another host name got HTTP $code, not 421"
+done
+for prefetch in "Next-Router-Prefetch: 1" "Purpose: prefetch"; do
+  code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --header "Host: evil.example" --header "$prefetch" "$url/")"
+  [ "$code" = "421" ] || fail "a prefetch ($prefetch) for another host name got HTTP $code"
 done
 # A name in ALLOWED_HOSTS works.
 curl --fail --silent --show-error --output /dev/null \
@@ -155,14 +161,21 @@ uid="$(compose exec -T api id -u)"
 [ "$uid" = "10001" ] || fail "the API runs as user id $uid, not 10001"
 
 echo "Checking that both containers are read-only, with no Linux capabilities"
+hardening='{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Privileged}} {{.HostConfig.CapDrop}}'
+hardening+=' {{.HostConfig.CapAdd}} {{.HostConfig.SecurityOpt}}'
 for service in api web; do
-  settings="$(docker inspect --format \
-    '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}}' \
-    "$(compose ps --quiet "$service")")"
-  case "$settings" in
-    'true [ALL] [no-new-privileges:true]') ;;
-    *) fail "$service runs with '$settings', not read-only, cap_drop ALL and no-new-privileges" ;;
-  esac
+  # What Compose asked Docker for: a read-only, unprivileged container that
+  # drops every capability, adds none back, and can't gain new privileges...
+  settings="$(docker inspect --format "$hardening" "$(compose ps --quiet "$service")")"
+  [ "$settings" = 'true false [ALL] [] [no-new-privileges:true]' ] ||
+    fail "$service runs with '$settings', not read-only and without privileges"
+  # ...and what the kernel gave the app's process: no capabilities, not even
+  # any it could gain later (the bounding set), and no new privileges.
+  status="$(compose exec -T "$service" cat /proc/1/status)"
+  for line in $'CapEff:\t0000000000000000' $'CapBnd:\t0000000000000000' $'NoNewPrivs:\t1'; do
+    grep --quiet --fixed-strings --line-regexp "$line" <<<"$status" ||
+      fail "$service's process has '$(grep "^${line%%:*}:" <<<"$status")', not '$line'"
+  done
 done
 
 echo "Checking that neither app can change its files"
