@@ -169,10 +169,13 @@ other websites out:
      because the server compares it with the `Origin` header.
 
    The API refuses both tricks too (`BrowserCheck` in `backend/app/main.py`),
-   for when it runs on its own, with `make run`, where your browser can reach
-   it: a POST from another website's page (403), and any host name but
-   `localhost`, `127.0.0.1`, `[::1]` and `api`, its name inside Docker
-   Compose (421). `ALLOWED_HOSTS` adds names to both servers.
+   wherever it runs. That matters with `make run`, where your browser can
+   reach it: a POST from another website's page gets 403, and any host name
+   but `localhost`, `127.0.0.1` and `[::1]` gets 421, on every route but
+   `/health`, which only says that the server is up. `ALLOWED_HOSTS` adds
+   names to both servers. In Docker Compose, `compose.yaml` adds `api`, the
+   name the web UI's server calls the API by; the API's Docker image reads no
+   `.env` file, so pass any other name with `docker run -e ALLOWED_HOSTS=...`.
 9. **Checked before use.** The page checks the shape of every response and every
    streamed event at run time before it uses them. Uploads and questions that
    are too large are refused by the web UI's server, from their

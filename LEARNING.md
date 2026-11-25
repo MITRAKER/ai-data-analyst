@@ -815,10 +815,14 @@ page request goes through it. Second, the API itself had no checks. In Docker
 Compose only the web server can reach it, but with `make run` it listens on
 `localhost:8000`, and your browser can reach it there too. Now the API has
 the same two checks: `BrowserCheck` in `backend/app/main.py`. FastAPI runs it
-before every route, because the router declares it as a dependency:
-`APIRouter(dependencies=[Depends(BrowserCheck)])`. Besides this computer's
-names, the API answers to `api`, its name inside Docker Compose, where the web
-server calls it.
+before every route of the router, because the router declares it as a
+dependency: `APIRouter(dependencies=[Depends(BrowserCheck)])`. Only `/health`
+sits on a router of its own, without the check, so that a health check can
+call the API by its IP address. Inside Docker Compose, the web server calls
+the API by the name `api`. A third review noticed that the API first accepted
+that name everywhere: outside Compose, another computer on your network could
+answer for `api` and rebind it. Now only `compose.yaml` adds it, through the
+API's `ALLOWED_HOSTS`.
 
 ### Every byte from the network is untrusted
 
@@ -878,12 +882,13 @@ React only shows the result.
   only the answer to the newest one is shown, even when that answer is an
   error (`useDatasets.ts`). So a slow answer to an older click can't replace a
   newer one. An upload follows its own rule: it opens its dataset, unless you
-  clicked another dataset while it ran, and its error always shows, because
-  the file wasn't added. If you clicked a dataset with the same name, the
-  upload still wins: that dataset was just replaced, and the upload's answer
-  holds the new version. React's strict mode, which runs every effect twice
-  while you develop, makes these races happen on every page load, and tests
-  play each of them.
+  clicked another dataset while it ran, and its own error always shows,
+  because the file wasn't added. If you clicked a dataset with the same name,
+  the upload still wins: that dataset was just replaced, and the upload's
+  answer holds the new version. React's strict mode, which runs every effect
+  twice while you develop, asks for the list twice on every page load, so
+  that race happens every time. Tests play it, and the races of clicks and
+  uploads too.
 
 ### Charts: Plotly in the browser
 

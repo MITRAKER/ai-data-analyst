@@ -56,10 +56,11 @@ async function refreshNames(
  * answered the last click. The newest choice wins:
  * - a click shows its dataset, or its error, only if no dataset was opened
  *   after it;
- * - an upload opens its dataset, unless the user opened another one
+ * - an upload opens its dataset, unless the user clicked another one
  *   meanwhile. (A dataset with the same name was just replaced, so the
- *   upload's new version wins over a click on it.) An upload's error always
- *   shows: the file wasn't added, whatever else happened meanwhile.
+ *   upload's new version wins over a click on it.) An upload's own error
+ *   always shows: the file wasn't added, whatever else happened meanwhile.
+ *   So does an error in reloading the list after it.
  */
 export function useDatasets(): Datasets {
   const [names, setNames] = useState<string[] | null>(null);

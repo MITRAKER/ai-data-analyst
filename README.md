@@ -114,6 +114,11 @@ container, so the key is never stored in the image. Each release also publishes
 the API's image to the GitHub Container Registry, as
 `ghcr.io/mitraker/ai-data-analyst`.
 
+Open http://localhost:8000/docs, not the `0.0.0.0` address in the log: the API
+answers only to `localhost`, `127.0.0.1` and `[::1]` (421 for any other host
+name, on every route but `/health`). To call it under another name or address,
+add `-e ALLOWED_HOSTS=that.name` to `docker run`.
+
 ## Quality
 
 Every pull request has to pass these checks before it is merged:

@@ -8,6 +8,8 @@
 #
 # The image needs one setting: BACKEND_URL, the address of the Python API
 # (http://api:8000 in Compose). The browser never talks to the API itself.
+# The API answers only to localhost and the names in its own ALLOWED_HOSTS, so
+# add the host name of BACKEND_URL there (Compose adds "api").
 # ALLOWED_HOSTS lists more host names that the web UI answers to, besides
 # localhost, 127.0.0.1 and [::1] (see SECURITY.md).
 #

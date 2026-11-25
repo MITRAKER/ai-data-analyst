@@ -7,6 +7,12 @@
 #   docker run --rm -p 8000:8000 -e ANTHROPIC_API_KEY ai-data-analyst
 # Then check it: curl http://localhost:8000/health
 #
+# Open http://localhost:8000/docs, not the http://0.0.0.0:8000 that uvicorn
+# prints: the API answers only to localhost, 127.0.0.1 and [::1] (421
+# otherwise, on every route but /health). The image reads no .env file, so to
+# call the API under another name or address, add -e ALLOWED_HOSTS=<name>
+# (see SECURITY.md).
+#
 # By default the data lives in memory and is gone when the container stops. To
 # keep it, store the DuckDB file in a named volume mounted at /data:
 #   docker run --rm -p 8000:8000 -e ANTHROPIC_API_KEY \
