@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useRef,
   useState,
   type KeyboardEvent,
   type MouseEvent,
@@ -44,11 +45,37 @@ function acceptClick(event: MouseEvent<HTMLButtonElement>): boolean {
   return true;
 }
 
+/** How long after a key pressed Stop an Enter in the box still belongs to that press. */
+const KEY_STOP_MS = 500;
+
+/**
+ * Stop, and a check for Enter in the text box. After Enter on Stop, the focus
+ * is in the box, where Enter sends. A second press of Enter, or the key held
+ * down, must not send the question typed while the agent was working.
+ */
+function useStop(onStop: () => void) {
+  const keyStopAt = useRef(Number.NEGATIVE_INFINITY);
+  return {
+    stop: (event: MouseEvent<HTMLButtonElement>) => {
+      if (acceptClick(event)) {
+        if (event.detail === 0) {
+          keyStopAt.current = event.timeStamp;
+        }
+        onStop();
+      }
+    },
+    /** Is this a new press of Enter, not a held key or a second press after Stop? */
+    isNewEnter: (event: KeyboardEvent<HTMLTextAreaElement>) =>
+      !event.repeat && event.timeStamp - keyStopAt.current >= KEY_STOP_MS,
+  };
+}
+
 /** The box for a question. Enter sends it; Shift+Enter starts a new line. */
 export function QuestionForm({ canAsk, busy, onAsk, onStop, inputRef }: Props) {
   const [text, setText] = useState("");
   const question = text.trim();
   const ready = canAsk && !busy && question.length >= MIN_QUESTION_CHARS;
+  const { stop, isNewEnter } = useStop(onStop);
 
   function submit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -58,16 +85,12 @@ export function QuestionForm({ canAsk, busy, onAsk, onStop, inputRef }: Props) {
     }
   }
 
-  function stop(event: MouseEvent<HTMLButtonElement>) {
-    if (acceptClick(event)) {
-      onStop();
-    }
-  }
-
   function sendOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      event.currentTarget.form?.requestSubmit();
+      if (isNewEnter(event)) {
+        event.currentTarget.form?.requestSubmit();
+      }
     }
   }
 

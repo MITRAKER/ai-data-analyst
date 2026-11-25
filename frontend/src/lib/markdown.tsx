@@ -99,7 +99,7 @@ function addTo(block: Block, line: Line, nested: boolean): boolean {
 export function toBlocks(text: string): Block[] {
   const blocks: Block[] = [];
   let open = false; // false right after a blank line
-  let indent = 0; // how far the first line of the last block is indented
+  let indent = 0; // how far the items of the last block are indented
   for (const raw of text.split(/\r?\n/)) {
     if (raw.trim() === "") {
       open = false;
@@ -112,6 +112,9 @@ export function toBlocks(text: string): Block[] {
     if (!open || last === undefined || !addTo(last, line, nested)) {
       blocks.push(newBlock(line));
       indent = line.indent;
+    } else if (!nested) {
+      // An item further left than the block's first line: the list's items are there.
+      indent = Math.min(indent, line.indent);
     }
     open = true;
   }

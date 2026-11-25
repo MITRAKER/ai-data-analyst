@@ -141,6 +141,38 @@ describe("QuestionForm", () => {
     expect(box).toHaveFocus();
   });
 
+  it.each([
+    ["pressed twice", "{Enter}{Enter}"],
+    ["held down", "{Enter>4/}"],
+  ])("doesn't send the next question when Enter on Stop is %s", async (_, keys) => {
+    const { onAsk, box } = setupBusyUntilStop();
+    const user = userEvent.setup();
+    // The next question, typed while the agent was still working.
+    fireEvent.change(box, { target: { value: "And by month?" } });
+    screen.getByRole("button", { name: "Stop" }).focus();
+    await user.keyboard(keys);
+    expect(box).toHaveFocus();
+    expect(onAsk).not.toHaveBeenCalled();
+    expect(box).toHaveValue("And by month?");
+  });
+
+  it("sends with a new press of Enter a moment after Stop, but not with a held key", () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
+    try {
+      const { onAsk, box } = setupBusyUntilStop();
+      fireEvent.change(box, { target: { value: "And by month?" } });
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }), { detail: 0 });
+      vi.advanceTimersByTime(600);
+      // A key held down repeats after a pause, which can be longer than that.
+      fireEvent.keyDown(box, { key: "Enter", repeat: true });
+      expect(onAsk).not.toHaveBeenCalled();
+      fireEvent.keyDown(box, { key: "Enter" });
+      expect(onAsk).toHaveBeenCalledWith("And by month?");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves the focus alone after a click, which would open a phone's keyboard", async () => {
     const { box } = setupBusyUntilStop();
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));

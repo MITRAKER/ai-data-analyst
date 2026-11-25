@@ -68,6 +68,21 @@ describe("toBlocks", () => {
     ]);
     // A tab counts as four spaces.
     expect(toBlocks("- a\n\t- a1")).toEqual([{ kind: "bullets", items: [item("a", ["a1"])] }]);
+    // A numbered list indented as a whole counts from its own items too.
+    expect(toBlocks("   1. a\n   - note")).toEqual([
+      { kind: "numbers", items: [item("a")], start: 1 },
+      { kind: "bullets", items: [item("note")] },
+    ]);
+    // One space more is not enough to nest.
+    expect(toBlocks("- a\n - b")).toEqual([{ kind: "bullets", items: [item("a"), item("b")] }]);
+  });
+
+  it("finds the list's items further left than the block's first line", () => {
+    // After a blank line, the block starts with sub-bullets; the next item is further left.
+    expect(toBlocks("- West\n\n  - Online\n  - Retail\n- East\n  - Online")).toEqual([
+      { kind: "bullets", items: [item("West")] },
+      { kind: "bullets", items: [item("Online"), item("Retail"), item("East", ["Online"])] },
+    ]);
   });
 
   it("returns nothing for empty text", () => {
