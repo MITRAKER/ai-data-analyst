@@ -14,16 +14,20 @@ The agent calls the same DataStore methods as its "tools".
 
 Browsers never call this API directly. The web UI's server forwards their
 requests (see frontend/src/app/api/), so the API needs no CORS settings and
-can stay on a private network.
+can stay on a private network. Like the web UI's server, it still refuses
+requests that another website could make a browser send (`BrowserCheck`),
+for when it runs on its own, with `make run`.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Annotated, TypedDict
+from typing import Annotated, Final, TypedDict
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.sse import EventSourceResponse, ServerSentEvent
@@ -44,6 +48,12 @@ logger = logging.getLogger(__name__)
 MAX_QUERY_ROWS = 5_000
 MAX_QUESTION_CHARS = 2_000
 MAX_DATASETS_PER_QUESTION = 50
+
+# The host names the API always answers to: this computer's own, and "api",
+# its name inside Docker Compose, where the web UI's server calls it by it.
+LOCAL_HOSTS: Final = ("localhost", "127.0.0.1", "[::1]", "api")
+# A host name, or an IPv6 address in brackets, and an optional port.
+HOST_HEADER: Final = re.compile(r"(\[[0-9a-f:.]+\]|[a-z0-9._-]+)(?::\d{1,5})?", re.IGNORECASE)
 
 
 class QueryRequest(BaseModel):
@@ -89,14 +99,12 @@ class AgentStatus(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class Services:
-    """What the routes need: the datastore and (if configured) the model client."""
+    """What the routes need: the datastore, the model client and the host names."""
 
     store: DataStore
     llm: LLMClient | None
     llm_problem: str = ""
-
-
-router = APIRouter()
+    hosts: frozenset[str] = frozenset(LOCAL_HOSTS)
 
 
 def services(request: Request) -> Services:
@@ -105,6 +113,60 @@ def services(request: Request) -> Services:
     if not isinstance(found, Services):
         raise InvariantError("create_app() must set app.state.services")
     return found
+
+
+def allowed_hosts(setting: str) -> frozenset[str]:
+    """This computer's names, plus the comma-separated names in `setting` (ALLOWED_HOSTS)."""
+    extra = (name.strip().lower() for name in setting.split(","))
+    return frozenset((*LOCAL_HOSTS, *(name for name in extra if name)))
+
+
+def sent_from_other_site(request: Request, host: str) -> bool:
+    """Did a browser send this request from another website's page?
+
+    Browsers send `Sec-Fetch-Site` to localhost and https addresses, and
+    `Origin` with every POST ("null" when hidden, which is refused).
+    """
+    site = request.headers.get("sec-fetch-site")
+    origin = request.headers.get("origin")
+    return (site is not None and site != "same-origin") or (
+        origin is not None and urlsplit(origin).netloc.lower() != host
+    )
+
+
+class BrowserCheck:
+    """Refuses a request that another website could make the user's browser send.
+
+    Every route depends on this check. Browsers never need to call the API: the
+    web UI's server does, from Node.js. Still, the API may run on its own, with
+    `make run`, and a browser on this computer could then reach it. So, like
+    the web UI's server (frontend/src/lib/guard.ts), the API refuses:
+
+    - a host name it doesn't know (421). Another website could point its own
+      name at this computer (DNS rebinding), and its page could then read the
+      answers;
+    - a POST that a browser sent from another website's page (403). That page
+      can't read the answer, but it could upload a dataset, or spend your API
+      credits. The browser names the sender in `Sec-Fetch-Site` and `Origin`.
+      The interactive docs at /docs send same-origin requests, and programs
+      such as curl or the web UI's server send neither header, so they pass.
+    """
+
+    def __init__(self, request: Request) -> None:
+        host = request.headers.get("host", "").lower()
+        found = HOST_HEADER.fullmatch(host)
+        if found is None or found.group(1) not in services(request).hosts:
+            raise HTTPException(
+                421,
+                "This server only answers to localhost. To use another name, add it to "
+                "ALLOWED_HOSTS.",
+            )
+        # Reading needs no more checks: another website's page can't read the answer.
+        if request.method not in {"GET", "HEAD"} and sent_from_other_site(request, host):
+            raise HTTPException(403, "Requests from other websites are not allowed.")
+
+
+router = APIRouter(dependencies=[Depends(BrowserCheck)])
 
 
 @router.get("/health")
@@ -250,7 +312,8 @@ def create_app(store: DataStore | None = None, llm: LLMClient | None = None) -> 
     if llm is None:
         llm, llm_problem = llm_from_env()
     app = FastAPI(title="AI Data Analyst", version=__version__)
-    app.state.services = Services(store=store, llm=llm, llm_problem=llm_problem)
+    hosts = allowed_hosts(os.getenv("ALLOWED_HOSTS", ""))
+    app.state.services = Services(store=store, llm=llm, llm_problem=llm_problem, hosts=hosts)
     app.include_router(router)
     return app
 

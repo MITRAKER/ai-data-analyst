@@ -11,8 +11,14 @@ from fastapi.testclient import TestClient
 from app.agent.events import AgentEvent
 from app.datastore import DataStore
 from app.invariants import InvariantError
-from app.main import create_app, llm_from_env, summarize
+from app.main import allowed_hosts, create_app, llm_from_env, summarize
 from tests.fakes import FakeLLM, reply, text, tool_use
+
+
+@pytest.fixture(autouse=True)
+def allow_test_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TestClient sends `Host: testserver`, and the API answers only to names it knows."""
+    monkeypatch.setenv("ALLOWED_HOSTS", "testserver")
 
 
 @pytest.fixture
@@ -105,6 +111,69 @@ def test_rejects_files_that_are_too_big(
 ) -> None:
     monkeypatch.setattr("app.main.MAX_UPLOAD_BYTES", 10)
     assert upload(client, "x.csv", b"a,b\n" + b"1,2\n" * 10).status_code == 413
+
+
+# ---------- requests that other websites could make a browser send ----------
+
+CSV_FILE = {"file": ("x.csv", b"a\n1\n", "text/csv")}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"origin": "https://evil.example"},
+        {"origin": "http://testserver:3000"},  # the web UI's page, on another port
+        {"origin": "null"},  # a page that hides where it comes from
+        {"sec-fetch-site": "cross-site"},
+        {"sec-fetch-site": "same-site"},
+        {"sec-fetch-site": "none"},
+    ],
+)
+def test_refuses_posts_from_other_websites(client: TestClient, headers: dict[str, str]) -> None:
+    res = client.post("/datasets", files=CSV_FILE, headers=headers)
+    assert res.status_code == 403
+    assert res.json() == {"detail": "Requests from other websites are not allowed."}
+    assert client.post("/ask", json={"question": "Who?"}, headers=headers).status_code == 403
+    assert client.get("/datasets").json() == {"datasets": []}
+
+
+def test_allows_the_docs_page_programs_and_reading(client: TestClient) -> None:
+    # The interactive docs at /docs send same-origin requests; curl sends neither header.
+    same_origin = {"origin": "http://testserver", "sec-fetch-site": "same-origin"}
+    assert client.post("/datasets", files=CSV_FILE, headers=same_origin).status_code == 201
+    assert client.post("/datasets", files=CSV_FILE).status_code == 201
+    # Another website's page can't read an answer, so reading is allowed from anywhere.
+    elsewhere = {"origin": "https://evil.example", "sec-fetch-site": "cross-site"}
+    assert client.get("/datasets", headers=elsewhere).json() == {"datasets": ["x"]}
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["evil.example", "evil.example:8000", "localhost.evil.example", "localhost:80:80", "[::2]", ""],
+)
+def test_refuses_host_names_it_doesnt_know(client: TestClient, host: str) -> None:
+    res = client.get("/health", headers={"host": host})
+    assert res.status_code == 421
+    assert "add it to ALLOWED_HOSTS" in res.json()["detail"]
+    assert client.post("/datasets", files=CSV_FILE, headers={"host": host}).status_code == 421
+
+
+@pytest.mark.parametrize(
+    "host", ["localhost", "localhost:8000", "LocalHost:8000", "127.0.0.1:8000", "[::1]:8000"]
+)
+def test_answers_to_this_computers_names(client: TestClient, host: str) -> None:
+    assert client.get("/health", headers={"host": host}).status_code == 200
+
+
+def test_answers_to_the_names_in_allowed_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLOWED_HOSTS", " Analyst.example, ,10.0.0.5 ")
+    api = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    for host in ["analyst.example", "analyst.example:8000", "10.0.0.5:8000", "localhost:8000"]:
+        assert api.get("/health", headers={"host": host}).status_code == 200
+    # "api" is the API's name inside Docker Compose, where the web UI's server calls it.
+    assert api.get("/health", headers={"host": "api:8000"}).status_code == 200
+    assert api.get("/health").status_code == 421  # testserver is no longer listed
+    assert allowed_hosts("") == {"localhost", "127.0.0.1", "[::1]", "api"}
 
 
 # ---------- /ask ----------
