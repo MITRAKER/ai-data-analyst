@@ -22,7 +22,7 @@ test.describe("pages and requests that fail on purpose", () => {
 
   test("gives the page-not-found page a nonce too, so its scripts run", async ({ page }) => {
     // The test fails if the policy blocked a script: that logs an error.
-    for (const path of ["/no-such-page", "/apix"]) {
+    for (const path of ["/no-such-page", "/apix", "/_next/image/x"]) {
       const response = await page.goto(path);
       expect(response?.status()).toBe(404);
       expect(response?.headers()["content-security-policy"]).toMatch(/'nonce-[\w+/=]+'/);

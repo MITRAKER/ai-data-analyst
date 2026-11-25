@@ -54,10 +54,20 @@ describe("proxy", () => {
     expect(pattern.test("/api/ask")).toBe(false);
     expect(pattern.test("/api")).toBe(false);
     expect(pattern.test("/_next/static/chunk.js")).toBe(false);
+    expect(pattern.test("/_next/image")).toBe(false);
     expect(pattern.test("/icon.svg")).toBe(false);
     // Pages whose names only start like those still get a nonce.
     expect(pattern.test("/apix")).toBe(true);
     expect(pattern.test("/api-docs")).toBe(true);
     expect(pattern.test("/icon.svgz")).toBe(true);
+    expect(pattern.test("/_next/image/x")).toBe(true);
+    expect(pattern.test("/_next/imagex")).toBe(true);
+  });
+
+  it("checks prefetches too, so that no page skips the host check", () => {
+    // A prefetch asks for the same page, and the answer can be read the same way.
+    const [rule] = config.matcher;
+    expect(rule).not.toHaveProperty("missing");
+    expect(rule).not.toHaveProperty("has");
   });
 });

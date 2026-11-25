@@ -127,12 +127,18 @@ describe("requests from other websites, or for other host names", () => {
       detail: "Requests from other websites are not allowed.",
     });
     // DNS rebinding: the request names the other site as its host.
-    const rebound = { host: "evil.example:3000", origin: "http://evil.example:3000" };
-    expect((await ask(post("/api/ask", "{}", rebound))).status).toBe(421);
-    const read = new Request("http://evil.example/api/datasets", {
-      headers: { host: "evil.example" },
-    });
-    expect((await datasets(read)).status).toBe(421);
+    const elsewhere = { host: "evil.example:3000", origin: "http://evil.example:3000" };
+    expect((await ask(post("/api/ask", "{}", elsewhere))).status).toBe(421);
+    // Every route that reads checks the host name too.
+    function rebound(path: string) {
+      return new Request(`http://evil.example${path}`, { headers: { host: "evil.example" } });
+    }
+    const reads = [
+      await datasets(rebound("/api/datasets")),
+      await dataset(rebound("/api/datasets/sales"), { params: Promise.resolve({ name: "sales" }) }),
+      await agentStatus(rebound("/api/agent/status")),
+    ];
+    expect(reads.map((response) => response.status)).toEqual([421, 421, 421]);
     expect(fetch).not.toHaveBeenCalled();
   });
 

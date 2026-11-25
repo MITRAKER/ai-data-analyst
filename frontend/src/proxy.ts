@@ -35,12 +35,7 @@ export const config = {
       // Pages only. Not /api and the routes under it, which check each request
       // themselves (and get a strict CSP of their own, in next.config.ts), and
       // not the static files, which are the same for everyone.
-      source: "/((?!api(?:/|$)|_next/static/|_next/image|icon\\.svg$).*)",
-      // Prefetches don't run scripts, so they need no nonce.
-      missing: [
-        { type: "header", key: "next-router-prefetch" },
-        { type: "header", key: "purpose", value: "prefetch" },
-      ],
+      source: "/((?!api(?:/|$)|_next/static/|_next/image$|icon\\.svg$).*)",
     },
   ],
 };

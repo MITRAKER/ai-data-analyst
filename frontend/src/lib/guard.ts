@@ -60,9 +60,10 @@ export function checkHost(request: Request): Response | null {
  * Refuse a request that another website sent through the user's browser.
  * Every route that changes something (a POST) calls this.
  *
- * Browsers send `Sec-Fetch-Site` with every request, and `Origin` with every
- * POST. Tools such as curl send neither, so they pass: they don't run inside a
- * browser where another site's page could use them.
+ * Browsers send `Sec-Fetch-Site` to localhost and https addresses, and
+ * `Origin` with every POST ("null" when the page hides where it comes from,
+ * which is refused). Tools such as curl send neither, so they pass: they
+ * don't run inside a browser where another site's page could use them.
  *
  * @returns null if the request comes from the app's own page, or the error response to send.
  */
