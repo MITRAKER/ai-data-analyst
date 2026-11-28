@@ -3,8 +3,9 @@
 # each runs on a fresh virtual machine ("runner") that GitHub provides. Merge a
 # pull request only when every check is green.
 #
-# Most jobs run a `make` command, so you can run exactly the same check on your
-# own computer before you push. LEARNING.md (Lesson 3) explains every job.
+# Most jobs run a `make` or `npm run` command, so you can run exactly the same
+# check on your own computer before you push. LEARNING.md explains every job:
+# Lesson 3 the backend's, Lesson 4 the web UI's.
 name: CI
 
 on:
@@ -158,11 +159,11 @@ jobs:
       - name: Set up Python, uv and the dependencies
         uses: $/.github/actions/setup-backend
       # The same hooks that run before each commit, on every file. The Python
-      # hooks are skipped because the jobs above run those tools already.
+      # and web UI hooks are skipped because other jobs run those tools already.
       # no-commit-to-branch is skipped because CI also checks main itself.
       - name: Run the pre-commit hooks on every file
         env:
-          SKIP: no-commit-to-branch,ruff-check,ruff-format,mypy,basedpyright,power-of-ten
+          SKIP: no-commit-to-branch,ruff-check,ruff-format,mypy,basedpyright,power-of-ten,web-format,web-lint
         run: uv run --project backend pre-commit run --all-files --show-diff-on-failure
 
   docker:
@@ -179,6 +180,97 @@ jobs:
       - name: Start the image and use the app
         run: make smoke
 
+  # ---- The web UI (frontend/) ----
+
+  web:
+    name: Web UI (format, lint, types, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The Node.js version in frontend/.nvmrc. No cache: every run installs
+      # from the registry, so a bad cache from another run can't get in.
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          package-manager-cache: false
+      # npm ci installs exactly what package-lock.json lists, and stops with an
+      # error if package-lock.json does not match package.json.
+      - name: Install the packages
+        run: npm ci
+      - name: Check the formatting (Prettier)
+        run: npm run format:check
+      - name: Lint (ESLint, with the Power of Ten rules)
+        run: npm run lint
+      - name: Check the types (TypeScript)
+        run: npm run typecheck
+      - name: Run the tests (fails below 95% coverage)
+        run: npm run test:coverage
+      - name: Build the app
+        run: npm run build
+      # Known vulnerabilities in the locked packages, and the registry's
+      # signatures, which show that each package is the one npm published.
+      - name: Look for known vulnerabilities in the locked packages
+        run: npm audit
+      - name: Check the signatures of the installed packages
+        run: npm audit signatures
+
+  e2e:
+    name: Browser tests (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          package-manager-cache: false
+      - name: Install the packages
+        run: npm ci
+      # The Chromium build that this Playwright version expects, and the
+      # system libraries it needs.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build the app
+        run: npm run build
+      - name: Run the browser tests
+        run: npm run test:e2e
+      # After a failure, the report (with a screenshot of each failed test) can
+      # be downloaded from the run's summary page for a week.
+      - name: Keep the report of a failed run
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+  compose:
+    name: Docker Compose (web UI and API together)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and start both services, and use the app
+        run: make compose-smoke
+
   # One check that sums up all the others. In the branch protection settings,
   # make this the single required check, instead of listing every job there.
   all-passed:
@@ -186,7 +278,7 @@ jobs:
     # Run even when a job above failed, so this check fails instead of being
     # skipped (GitHub treats a skipped required check as passed).
     if: ${{ always() }}
-    needs: [lint, typecheck, jpl, test, audit, hygiene, docker]
+    needs: [lint, typecheck, jpl, test, audit, hygiene, docker, web, e2e, compose]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

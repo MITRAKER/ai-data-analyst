@@ -1,9 +1,9 @@
 # Coding standard
 
-This is the coding standard for the Python code of AI Data Analyst. It adapts
-NASA/JPL's "Power of Ten" rules to Python and says exactly which tool checks
-each rule. This file is the source of truth. CONTRIBUTING.md and LEARNING.md
-only summarize it.
+This is the coding standard of AI Data Analyst. It adapts NASA/JPL's "Power of
+Ten" rules to Python, and then to the TypeScript of the web UI, and says exactly
+which tool checks each rule. This file is the source of truth. CONTRIBUTING.md
+and LEARNING.md only summarize it.
 
 ## Contents
 
@@ -11,6 +11,7 @@ only summarize it.
 - [Where the rules apply](#where-the-rules-apply)
 - [How the rules are checked](#how-the-rules-are-checked)
 - [The ten rules](#the-ten-rules)
+- [The web UI (TypeScript)](#the-web-ui-typescript)
 - [Running the checker](#running-the-checker)
 - [What the checker cannot see](#what-the-checker-cannot-see)
 - [Suppressions](#suppressions)
@@ -41,6 +42,10 @@ version.
 | `backend/app/` (the application) | Yes | Yes |
 | `backend/tools/` (the checker itself) | Yes | Yes |
 | `backend/tests/` | No | Yes |
+
+The web UI in `frontend/` is TypeScript, so other tools check it: ESLint with
+the Power of Ten rules, TypeScript in strict mode, and Prettier. The section
+[The web UI (TypeScript)](#the-web-ui-typescript) maps each rule.
 
 The tests are exempt from the Power of Ten checker. pytest is built around
 `assert`, test helpers pass functions around, and test data is often a list at
@@ -342,6 +347,49 @@ the check just like an error:
 The "every day" part is CI: it runs on every pull request and every push to
 `main`, and once a week on a schedule, so a new vulnerability or a new tool
 warning shows up even when nobody pushes.
+
+## The web UI (TypeScript)
+
+The web UI follows the same ten rules. TypeScript is not Python, so a few rules
+take a different form, and ESLint (`frontend/eslint.config.mjs`) checks them
+instead of our own checker. ESLint runs with `--max-warnings=0`, so a warning
+fails the check like an error.
+
+| # | In the web UI | Checked by |
+| --- | --- | --- |
+| 1 | Complexity at most 10, nesting at most 3 levels, no labels | ESLint `complexity`, `max-depth`, `max-nested-callbacks`, `no-labels` |
+| 2 | No `while`, `do...while`, `for (;;)` or `for...in`. Loop with `for...of` over something of fixed size, or count up to a limit | ESLint `no-restricted-syntax`, `no-constant-condition` |
+| 3 | Every buffer and list has a size cap (`MAX_EVENT_CHARS`, `MAX_STREAM_BYTES`, `MAX_TURNS`, `MAX_TABLE_ROWS` and more), and a request body is checked against its `Content-Length` before it is read | Code review and tests |
+| 4 | At most 60 lines per function (blank lines and comments do not count), at most 4 parameters | ESLint `max-lines-per-function`, `max-params` |
+| 5 | Every value from outside (network, JSON) is checked by code before it is used. No casts with `as`: a cast only silences the type checker | `events.ts` and `api.ts`; ESLint `consistent-type-assertions` |
+| 6 | `const` by default, no `var`, no shadowed names, no mutable state at module level | ESLint `prefer-const`, `no-var`, `no-shadow`; code review for module state |
+| 7 | Every promise is awaited, or explicitly dropped with `void`. No empty `catch` blocks | typescript-eslint `no-floating-promises`, `no-misused-promises`; ESLint `no-empty` |
+| 8 | No `eval`, `new Function()`, `javascript:` URLs or HTML strings (`dangerouslySetInnerHTML`) | ESLint `no-eval`, `no-new-func`, `no-script-url`, `react/no-danger` |
+| 9 | See below: callbacks are allowed, `any` is not | typescript-eslint `strictTypeChecked` |
+| 10 | Zero warnings: strict TypeScript (`strict`, `noUncheckedIndexedAccess` and more), typescript-eslint's strictest rule sets, and CodeQL | `npm run check`, CI |
+
+Two rules differ on purpose:
+
+- **Rule 5 has no `require()`.** In Python, `require()` checks invariants that
+  the type checker can't see. In the web UI, most such checks are about data
+  from outside, and TypeScript's types vanish at run time. So the code checks
+  that data with type guards and parsers (`isObject`, `parseAgentEvent`), which
+  also tell the type checker what they proved. There is no density count.
+- **Rule 9 allows callbacks.** React is built on functions passed as values:
+  `onClick`, `useEffect` and every `.map()` over a list. Banning them would ban
+  React. Instead, ESLint limits how deeply callbacks nest, and the strict rule
+  sets ban `any`, so every callback has a checked type.
+
+What ESLint cannot see: recursion (rule 1) is not checked automatically, so
+code review watches for it; the web UI has none. And like Python's checker,
+ESLint can't prove that what a `for...of` walks over is small: that is what the
+size caps of rule 3 are for.
+
+The tests in `frontend/` may be longer than 60 lines and nest callbacks
+(`describe`, `it`), as pytest tests may break rules 5, 6 and 9. They pass every
+other check. Suppressions follow the same policy as in Python: an
+`eslint-disable` comment names one rule and gives its reason after ` -- `, and
+ESLint reports one that no longer does anything. The web UI has none.
 
 ## Running the checker
 

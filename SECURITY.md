@@ -133,6 +133,67 @@ closes a file descriptor to open a file, tries to send a signal to the server or
 to make a module built into Python, or leaves code behind to run after the hook
 is gone.
 
+### The web UI
+
+The web page shows what the agent wrote, and the agent read your data. So the
+web UI treats every answer from the network as untrusted, too, and it keeps
+other websites out:
+
+7. **One way in.** The browser talks only to the web UI's own server. That
+   server passes on only the five calls the page needs: list, upload and
+   describe datasets, check whether the agent is ready, and ask a question.
+   `POST /query`, which runs any SQL it gets, is not one of them. In Docker
+   Compose, the API publishes no port, so only the web UI's server can reach
+   it, and the API needs no CORS settings.
+8. **Only for the app's own page.** Every website you visit runs code in the
+   same browser as the app. The web UI's server (`frontend/src/lib/guard.ts`)
+   refuses the two tricks such a site could use:
+   - A *cross-site request*: the other site's page makes your browser send an
+     upload or a question to the app. It can't read the answer, but it could
+     replace a dataset with fake numbers, or spend your API credits. The
+     browser names the sender in the `Sec-Fetch-Site` and `Origin` headers, so
+     the server refuses an upload or a question from any other origin (403). A
+     question must also be sent as JSON (415 otherwise): a page from another
+     site may send JSON only with the server's permission, which it never gets.
+   - *DNS rebinding*: the other site points its own host name at `127.0.0.1`,
+     so the browser treats the app as part of that site, and its page could
+     read your data. Each request still carries that name in its `Host`
+     header, so the server answers only to `localhost`, `127.0.0.1` and
+     `[::1]` (421 otherwise). It checks every page, prefetches included, and
+     every route except `/api/health`, which only says that the server is up.
+     Static files, such as the page's scripts, hold no data, so they are not
+     checked. To open the app under another name, add that name to
+     `ALLOWED_HOSTS`. Behind a reverse proxy, the proxy must pass the `Host`
+     header on as the browser sent it, port included (in nginx,
+     `proxy_set_header Host $http_host;`, in Apache, `ProxyPreserveHost On`),
+     because the server compares it with the `Origin` header.
+
+   The API refuses both tricks too (`BrowserCheck` in `backend/app/main.py`),
+   wherever it runs. That matters with `make run`, where your browser can
+   reach it: a POST from another website's page gets 403, and any host name
+   but `localhost`, `127.0.0.1` and `[::1]` gets 421, on every route but
+   `/health`, which only says that the server is up. `ALLOWED_HOSTS` adds
+   names to both servers. In Docker Compose, `compose.yaml` adds `api`, the
+   name the web UI's server calls the API by; the API's Docker image reads no
+   `.env` file, so pass any other name with `docker run -e ALLOWED_HOSTS=...`.
+9. **Checked before use.** The page checks the shape of every response and every
+   streamed event at run time before it uses them. Uploads and questions that
+   are too large are refused by the web UI's server, from their
+   `Content-Length`, before anything is passed on.
+10. **Text, never HTML.** Answers, SQL, code and table cells are always shown as
+    text. The page has its own small Markdown renderer, which builds page
+    elements and never HTML strings, so markup in an answer shows up as
+    characters and never runs. Charts get the same care: Plotly reads a few
+    HTML tags in a chart's text, such as links and styles, so the page escapes
+    `&`, `<` and `>` in every string of a chart before Plotly draws it. A CSV
+    cell can't put a link on the page.
+11. **A strict Content-Security-Policy.** Every page, including the
+    page-not-found page, gets a new random nonce, and only scripts that carry
+    it may run. The API's routes send JSON, never a page, so their policy
+    allows nothing at all. Other headers stop other sites from showing the page
+    in a frame (clickjacking) and stop browsers from guessing content types.
+    Charts need inline styles, so styles are less strict than scripts.
+
 ### What these layers do not do
 
 These layers reduce the risk. They are not a perfect sandbox. All the limits are
@@ -150,17 +211,23 @@ Firecracker (a lightweight virtual machine), with no network access.
 
 Also keep in mind:
 
-- **No login.** The API has no authentication and no rate limits. Anyone who can
-  reach it can upload data, read every dataset and ask the agent questions, which
-  spends your API credits. Run it on your own computer, or put authentication in
-  front of it before other people can reach it.
+- **No login.** Neither the web UI nor the API has authentication or rate
+  limits. Anyone who can reach them can upload data, read every dataset and ask
+  the agent questions, which spends your API credits. Layer 8 keeps other
+  websites from doing this through your browser, but not a program that can
+  reach the server itself. Run them on your own computer, or put authentication
+  in front of them before other people can reach them. Docker Compose publishes
+  the web UI on `127.0.0.1` only, so other computers on your network can't open
+  it.
 - **Size limits.** Uploads, SQL text, query results and the number of datasets
   all have size limits, so one request cannot make the app grow without bound.
 - **A limited agent loop.** The agent stops after a fixed number of steps, so a
   confused agent cannot loop, and spend money, forever.
-- **A non-root container.** The Docker image runs the app as an ordinary user,
-  not as root. The installed code belongs to root, so the app cannot change its
-  own code. CI starts the image on every pull request and checks both.
+- **Non-root containers.** Both Docker images run their app as an ordinary
+  user, not as root. The installed code belongs to root, so the apps cannot
+  change their own code. In Docker Compose, both containers are also read-only,
+  have no Linux capabilities, and can't gain new rights. CI starts the images
+  on every pull request and checks all of this.
 
 ## Secrets
 
@@ -201,12 +268,17 @@ privately, as described in [Reporting a vulnerability](#reporting-a-vulnerabilit
 ## Automated security checks
 
 - **Ruff's `S` rules**, the Bandit security checks, run in pre-commit and in CI.
-- **CodeQL** analyzes the Python code and the GitHub Actions workflows on every
-  pull request and once a week. Findings appear in the **Security** tab.
-- **pip-audit** checks the dependencies for known vulnerabilities in CI. Run it
-  yourself with `make security`.
-- **Dependabot** opens weekly pull requests to update the Python packages, the
-  GitHub Actions and the Docker base image. It waits until a new version is 7
+- **CodeQL** analyzes the Python code, the TypeScript code and the GitHub
+  Actions workflows on every pull request and once a week. Findings appear in
+  the **Security** tab.
+- **pip-audit** checks the Python dependencies for known vulnerabilities in CI.
+  Run it yourself with `make security`.
+- **npm audit** does the same for the web UI's packages, and
+  `npm audit signatures` checks that each one carries the npm registry's
+  signature. Install scripts are turned off, so a package can't run code when
+  it is installed.
+- **Dependabot** opens weekly pull requests to update the Python and npm
+  packages, the GitHub Actions and the Docker base images. It waits until a new version is 7
   days old, because a hacked release is usually found and removed within days.
   Security updates do not wait.
 - **zizmor** checks the GitHub Actions workflows for security mistakes, such as

@@ -1,10 +1,14 @@
 # pre-commit runs these checks on the files you are about to commit, before the
 # commit is made. `make setup` installs it. To run every hook on every file:
 #   cd backend && uv run pre-commit run --all-files
+# The web UI's hooks need its packages: run `make web-setup` once first, or
+# skip them with SKIP=web-format,web-lint (CI's pre-commit job skips them too,
+# because its "web" job runs the same checks).
 #
-# Every hook is "local": it runs a tool from our own uv environment. So the tool
-# versions come from backend/uv.lock, the same versions CI uses, and Dependabot
-# keeps them up to date. Nothing else is downloaded.
+# Every hook is "local": nothing is downloaded. The Python tools come from our
+# own uv environment, so their versions come from backend/uv.lock, the same
+# versions CI uses, and Dependabot keeps them up to date. The web UI's hooks run
+# its npm scripts, with the versions in frontend/package-lock.json.
 #
 # `uv run --project backend` runs a tool from the backend's environment but stays
 # in the repository root, where pre-commit passes the file names from.
@@ -87,7 +91,8 @@ repos:
         entry: uv run --project backend detect-secrets-hook
         language: system
         types: [text]
-        exclude: (^|/)uv\.lock$ # package hashes look like secrets, but are not
+        # Package hashes in the lock files look like secrets, but are not.
+        exclude: (^|/)(uv\.lock|package-lock\.json)$
 
       # ---- Shell scripts and GitHub Actions files ----
       # check-jsonschema compares each file with the official schema for its
@@ -150,11 +155,35 @@ repos:
         types: [python]
         pass_filenames: false
 
+      # ---- Web UI (frontend/): the same checks as CI ----
+      # They run only when a file in frontend/ changed. scripts/web-hook.sh runs
+      # the npm script inside frontend/, with the packages that `make web-setup`
+      # installs, and stops with a clear message if they are missing.
+      - id: web-format
+        name: Prettier (web UI formatting)
+        entry: scripts/web-hook.sh format:check
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+      - id: web-lint
+        name: ESLint (web UI)
+        entry: scripts/web-hook.sh lint
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+
       # ---- Before each push: the full test suite (it takes a few seconds) ----
       - id: pytest
         name: pytest with the coverage gate
         entry: uv run --directory backend pytest --cov -q
         language: system
         types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+      - id: web-check
+        name: web UI formatting, lint, types and tests, with the coverage gate
+        entry: scripts/web-hook.sh check
+        language: system
+        files: ^frontend/
         pass_filenames: false
         stages: [pre-push]

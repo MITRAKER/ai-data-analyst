@@ -3,6 +3,7 @@
 [![CI](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/MITRAKER/ai-data-analyst/actions/workflows/codeql.yml)
 [![Python 3.12 | 3.13 | 3.14 | 3.15](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14%20%7C%203.15-3776ab)](backend/pyproject.toml)
+[![Node.js 26](https://img.shields.io/badge/node.js-26-5fa04e)](frontend/.nvmrc)
 [![NASA/JPL Power of Ten](https://img.shields.io/badge/NASA%2FJPL-Power%20of%20Ten-0b3d91)](docs/CODING_STANDARD.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -16,39 +17,71 @@ and explains the answer. Every step it takes is shown, so you can check its work
 ## How it works
 
 ```
-User question
-     │
-     ▼
-Agent orchestrator (Claude + tool calling) ◄──┐ may re-analyze
+Web UI (Next.js) ──── your question ────► API (FastAPI)
+     ▲                                         │
+     │                                         ▼
+     │                Agent orchestrator (Claude + tool calling) ◄──┐ may re-analyze
+     │                                         │                    │
+     │                                         ├── query_database  (read-only SQL, DuckDB / Postgres)
+     │                                         ├── run_python      (pandas in a sandbox)
+     │                                         └── make_chart      (Plotly)
      │                                         │
-     ├── query_database  (read-only SQL, DuckDB / Postgres)
-     ├── run_python      (pandas in a sandbox)
-     └── make_chart      (Plotly)
-     │
-     ▼
-Interpret results  ──►  Answer + visualization
+     └──── every step, live ◄──────────────────┘
+           (Server-Sent Events), then the answer and its charts
 ```
+
+The web page shows every step while the agent works: its plan, the SQL and
+Python it writes, and the results. You can check its work, or press Stop.
 
 ## Progress
 
 - [x] **Step 1:** FastAPI backend, CSV upload into DuckDB, safe read-only SQL
 - [x] **Step 2:** Agent loop with SQL, Python and chart tools
 - [x] **Engineering standards:** CI/CD, the NASA/JPL Power of Ten rules, security scanning, releases
-- [ ] **Step 3:** Next.js chat UI with live steps and charts
+- [x] **Step 3:** Next.js chat UI with live steps and charts, and Docker Compose
 - [ ] **Step 4:** Postgres support, evaluation set, demo
+
+## Run it with Docker Compose
+
+The quickest way to try the whole app. You need
+[Docker](https://docs.docker.com/get-started/get-docker/).
+
+```bash
+cp .env.example .env        # then add your ANTHROPIC_API_KEY to .env
+docker compose up --build   # or: make up
+```
+
+Open http://localhost:3000, upload `data/sample_sales.csv`, and click one of the
+suggested questions. Without a key the app still runs, and the page tells you
+that the agent can't answer yet. Your data is kept in a Docker volume between
+restarts; `docker compose down --volumes` deletes it.
+
+The web UI and the API answer only to this computer's own names: `localhost`,
+`127.0.0.1` and `[::1]`. To open the app under another name that points to this
+computer, add that name to `ALLOWED_HOSTS` in `.env`. Behind a reverse proxy,
+have the proxy pass on the `Host` header unchanged (in nginx,
+`proxy_set_header Host $http_host;`). [SECURITY.md](SECURITY.md#the-web-ui)
+explains why.
 
 ## Run it locally
 
-You need [uv](https://docs.astral.sh/uv/getting-started/installation/) and
-`make`. [CONTRIBUTING.md](CONTRIBUTING.md#prerequisites) explains how to install
-them.
+For development you need [uv](https://docs.astral.sh/uv/getting-started/installation/),
+`make`, and [Node.js](https://nodejs.org/) 26 for the web UI.
+[CONTRIBUTING.md](CONTRIBUTING.md#prerequisites) explains how to install them.
 
 ```bash
-make setup    # installs the exact package versions from backend/uv.lock
-make run      # starts the API on http://localhost:8000
+make setup      # installs the exact package versions from backend/uv.lock
+make run        # starts the API on http://localhost:8000
 ```
 
-Then open http://localhost:8000/docs for the interactive API, or:
+To use the web UI, in a second terminal:
+
+```bash
+make web-setup  # once: installs the exact versions from frontend/package-lock.json
+make web-dev    # starts the web UI on http://localhost:3000
+```
+
+Or use the API directly: open http://localhost:8000/docs for the interactive API, or:
 
 ```bash
 curl -F file=@data/sample_sales.csv localhost:8000/datasets
@@ -66,9 +99,10 @@ uv run python -m app.cli ../data/sample_sales.csv "Which region's revenue fell t
 ```
 
 You'll see every step: the SQL it writes, the Python it runs, any errors it
-recovers from, and the final answer. Or call `POST /ask` with `{"question": "..."}`.
+recovers from, and the final answer. Or call `POST /ask` with `{"question": "..."}`,
+or `POST /ask/stream` to get each step as it happens.
 
-### Or run it with Docker
+### Only the API, with Docker
 
 ```bash
 make docker
@@ -77,8 +111,13 @@ docker run --rm -p 8000:8000 -e ANTHROPIC_API_KEY ai-data-analyst
 
 `-e ANTHROPIC_API_KEY` with no value copies the key from your shell into the
 container, so the key is never stored in the image. Each release also publishes
-the image to the GitHub Container Registry, as
+the API's image to the GitHub Container Registry, as
 `ghcr.io/mitraker/ai-data-analyst`.
+
+Open http://localhost:8000/docs, not the `0.0.0.0` address in the log: the API
+answers only to `localhost`, `127.0.0.1` and `[::1]` (421 for any other host
+name, on every route but `/health`). To call it under another name or address,
+add `-e ALLOWED_HOSTS=that.name` to `docker run`.
 
 ## Quality
 
@@ -97,13 +136,22 @@ Every pull request has to pass these checks before it is merged:
 - **pre-commit** hooks: secrets, file hygiene, ShellCheck, and zizmor for the
   GitHub Actions workflows
 - **Docker**: the image is built, started and smoke-tested
-- **CodeQL** security analysis of the Python code and the workflows
+- **The web UI**: Prettier, ESLint with the Power of Ten rules for TypeScript,
+  strict TypeScript, and Vitest with at least 95% coverage; `npm audit` and
+  npm's registry signatures; a production build
+- **Playwright** browser tests on a desktop and a phone screen, with **axe**
+  accessibility checks, against a stand-in for the API, so they need no key
+- **Docker Compose**: both images together, with their security settings
+- **CodeQL** security analysis of the Python and TypeScript code and the
+  workflows
 
-`make check` runs the code checks on your computer. [CONTRIBUTING.md](CONTRIBUTING.md)
+`make check` runs the backend checks on your computer, and `make web-check` the
+web UI's. [CONTRIBUTING.md](CONTRIBUTING.md)
 explains the workflow, and [SECURITY.md](SECURITY.md) explains how the app keeps
 AI-written SQL and Python in check and how to report a vulnerability.
 
 ## Tech stack
 
 Python · FastAPI · DuckDB · pandas · Claude API (tool use) · uv · Ruff · mypy ·
-pytest · Docker · GitHub Actions · Next.js (step 3)
+pytest · TypeScript · Next.js · React · Plotly · Vitest · Playwright · Docker
+Compose · GitHub Actions

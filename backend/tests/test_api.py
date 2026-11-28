@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx2
 import pytest
 from fastapi.testclient import TestClient
@@ -9,8 +11,14 @@ from fastapi.testclient import TestClient
 from app.agent.events import AgentEvent
 from app.datastore import DataStore
 from app.invariants import InvariantError
-from app.main import create_app, llm_from_env, summarize
+from app.main import allowed_hosts, create_app, llm_from_env, summarize
 from tests.fakes import FakeLLM, reply, text, tool_use
+
+
+@pytest.fixture(autouse=True)
+def allow_test_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TestClient sends `Host: testserver`, and the API answers only to names it knows."""
+    monkeypatch.setenv("ALLOWED_HOSTS", "testserver")
 
 
 @pytest.fixture
@@ -105,6 +113,83 @@ def test_rejects_files_that_are_too_big(
     assert upload(client, "x.csv", b"a,b\n" + b"1,2\n" * 10).status_code == 413
 
 
+# ---------- requests that other websites could make a browser send ----------
+
+CSV_FILE = {"file": ("x.csv", b"a\n1\n", "text/csv")}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"origin": "https://evil.example"},
+        {"origin": "http://testserver:3000"},  # the web UI's page, on another port
+        {"origin": "null"},  # a page that hides where it comes from
+        {"sec-fetch-site": "cross-site"},
+        {"sec-fetch-site": "same-site"},
+        {"sec-fetch-site": "none"},
+    ],
+)
+def test_refuses_posts_from_other_websites(client: TestClient, headers: dict[str, str]) -> None:
+    res = client.post("/datasets", files=CSV_FILE, headers=headers)
+    assert res.status_code == 403
+    assert res.json() == {"detail": "Requests from other websites are not allowed."}
+    assert client.post("/ask", json={"question": "Who?"}, headers=headers).status_code == 403
+    assert client.get("/datasets").json() == {"datasets": []}
+
+
+def test_allows_the_docs_page_programs_and_reading(client: TestClient) -> None:
+    # The interactive docs at /docs send same-origin requests; curl sends neither header.
+    same_origin = {"origin": "http://testserver", "sec-fetch-site": "same-origin"}
+    assert client.post("/datasets", files=CSV_FILE, headers=same_origin).status_code == 201
+    assert client.post("/datasets", files=CSV_FILE).status_code == 201
+    # Another website's page can't read an answer, so reading is allowed from anywhere.
+    elsewhere = {"origin": "https://evil.example", "sec-fetch-site": "cross-site"}
+    assert client.get("/datasets", headers=elsewhere).json() == {"datasets": ["x"]}
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["evil.example", "evil.example:8000", "localhost.evil.example", "localhost:80:80", "[::2]", ""],
+)
+def test_refuses_host_names_it_doesnt_know(client: TestClient, host: str) -> None:
+    res = client.get("/datasets", headers={"host": host})
+    assert res.status_code == 421
+    assert "add that name to the API's ALLOWED_HOSTS" in res.json()["detail"]
+    assert client.post("/datasets", files=CSV_FILE, headers={"host": host}).status_code == 421
+
+
+@pytest.mark.parametrize(
+    "host", ["localhost", "localhost:8000", "LocalHost:8000", "127.0.0.1:8000", "[::1]:8000"]
+)
+def test_answers_to_this_computers_names(client: TestClient, host: str) -> None:
+    assert client.get("/datasets", headers={"host": host}).status_code == 200
+
+
+def test_answers_to_the_names_in_allowed_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLOWED_HOSTS", " Analyst.example, ,10.0.0.5 ")
+    api = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    for host in ["analyst.example", "analyst.example:8000", "10.0.0.5:8000", "localhost:8000"]:
+        assert api.get("/datasets", headers={"host": host}).status_code == 200
+    assert api.get("/datasets").status_code == 421  # testserver is no longer listed
+    assert allowed_hosts("") == {"localhost", "127.0.0.1", "[::1]"}
+
+
+def test_answers_to_api_only_when_compose_lists_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # "api" is the API's name inside Docker Compose. Elsewhere, another website
+    # could answer for that name, so only compose.yaml adds it.
+    monkeypatch.delenv("ALLOWED_HOSTS")
+    alone = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    assert alone.get("/datasets", headers={"host": "api:8000"}).status_code == 421
+    monkeypatch.setenv("ALLOWED_HOSTS", "api")  # what compose.yaml sets
+    in_compose = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    assert in_compose.get("/datasets", headers={"host": "api:8000"}).status_code == 200
+
+
+def test_health_answers_to_any_host_name(client: TestClient) -> None:
+    # It holds no data, and a health check may call the API by its IP address.
+    assert client.get("/health", headers={"host": "10.0.0.5:8000"}).json() == {"status": "ok"}
+
+
 # ---------- /ask ----------
 
 
@@ -145,6 +230,9 @@ def test_ask_validates_datasets_and_question(sample_bytes: bytes) -> None:
     api = ask_client(FakeLLM([]), sample_bytes)
     assert api.post("/ask", json={"question": "hi?", "datasets": ["nope"]}).status_code == 404
     assert api.post("/ask", json={"question": "hi"}).status_code == 422
+    # Spaces don't count: a question of only spaces is too short too.
+    assert api.post("/ask", json={"question": "     "}).status_code == 422
+    assert api.post("/ask", json={"question": "  hi  "}).status_code == 422
 
 
 def test_ask_with_listed_datasets(sample_bytes: bytes) -> None:
@@ -156,6 +244,100 @@ def test_ask_with_listed_datasets(sample_bytes: bytes) -> None:
 def test_ask_without_api_key_returns_503() -> None:
     api = TestClient(create_app(DataStore(":memory:")))  # the real client, but no key is set
     res = api.post("/ask", json={"question": "anything?"})
+    assert res.status_code == 503
+    assert "ANTHROPIC_API_KEY is not set" in res.json()["detail"]
+
+
+def test_agent_status_says_whether_the_agent_can_answer() -> None:
+    ready = TestClient(create_app(DataStore(":memory:"), FakeLLM([])))
+    assert ready.get("/agent/status").json() == {"ready": True, "detail": ""}
+    no_key = TestClient(create_app(DataStore(":memory:")))  # the real client, but no key
+    status = no_key.get("/agent/status").json()
+    assert status["ready"] is False
+    assert "ANTHROPIC_API_KEY is not set" in status["detail"]
+
+
+def sse_events(body: str) -> list[tuple[str, dict[str, object]]]:
+    """Parse a text/event-stream body into (event name, data) pairs."""
+    events: list[tuple[str, dict[str, object]]] = []
+    for block in body.split("\n\n"):
+        lines = [line for line in block.splitlines() if not line.startswith(":")]
+        if not lines:
+            continue
+        name = next(line.removeprefix("event: ") for line in lines if line.startswith("event: "))
+        data = "\n".join(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
+        events.append((name, json.loads(data)))
+    return events
+
+
+def test_ask_stream_sends_each_step_as_it_happens(sample_bytes: bytes) -> None:
+    llm = FakeLLM(
+        [
+            reply(
+                text("Let me count."),
+                tool_use("t1", "query_database", sql="SELECT COUNT(*) AS n FROM sales", purpose=""),
+            ),
+            reply(text("2,000 orders."), stop="end_turn"),
+        ]
+    )
+    res = ask_client(llm, sample_bytes).post("/ask/stream", json={"question": "How many?"})
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    assert res.headers["cache-control"] == "no-cache"
+    events = sse_events(res.text)
+    assert [name for name, _ in events] == ["note", "tool_call", "tool_result", "answer"]
+    # The event name is the event's type, and the data is the whole event.
+    assert all(name == data["type"] for name, data in events)
+    assert events[2][1]["display"] == {
+        "result": {"columns": ["n"], "rows": [[2000]], "row_count": 1, "truncated": False}
+    }
+    assert events[-1][1] == {"type": "answer", "text": "2,000 orders.", "charts": [], "steps": 2}
+
+
+def test_ask_stream_ends_with_an_error_event_when_the_run_fails(sample_bytes: bytes) -> None:
+    api = ask_client(FakeLLM([reply(stop="refusal")]), sample_bytes)
+    events = sse_events(api.post("/ask/stream", json={"question": "anything?"}).text)
+    assert events == [
+        (
+            "error",
+            {
+                "type": "error",
+                "message": "The model declined to answer this request.",
+                "charts": [],
+            },
+        )
+    ]
+
+
+def test_ask_stream_ends_with_an_error_event_after_an_unexpected_failure(
+    sample_bytes: bytes,
+) -> None:
+    # This fake has no replies left, so the agent's first call to it fails with
+    # an IndexError: a stand-in for any bug that the agent does not expect.
+    api = ask_client(FakeLLM([]), sample_bytes)
+    events = sse_events(api.post("/ask/stream", json={"question": "How many?"}).text)
+    assert events == [
+        (
+            "error",
+            {
+                "type": "error",
+                "message": "The agent failed unexpectedly. Please try again.",
+                "charts": [],
+            },
+        )
+    ]
+
+
+def test_ask_stream_checks_the_request_before_streaming(sample_bytes: bytes) -> None:
+    # A request that can't succeed gets a plain HTTP error, never a stream.
+    api = ask_client(FakeLLM([]), sample_bytes)
+    unknown = api.post("/ask/stream", json={"question": "hi?", "datasets": ["nope"]})
+    assert unknown.status_code == 404
+    assert unknown.headers["content-type"] == "application/json"
+    assert api.post("/ask/stream", json={"question": "hi"}).status_code == 422
+    assert api.post("/ask/stream", json={"question": "     "}).status_code == 422
+    no_key = TestClient(create_app(DataStore(":memory:")))
+    res = no_key.post("/ask/stream", json={"question": "anything?"})
     assert res.status_code == 503
     assert "ANTHROPIC_API_KEY is not set" in res.json()["detail"]
 

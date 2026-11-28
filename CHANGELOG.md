@@ -18,10 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Developer tooling:** uv with a lockfile; a `Makefile` (`make check`, `make test`, `make run` and more); pre-commit hooks for file hygiene, secrets, ShellCheck, zizmor and the schemas of the GitHub files; EditorConfig.
 - **Docker image:** multi-stage build that runs as a non-root user who cannot change the installed code, with a health check and an optional `/data` volume for a DuckDB file that outlives the container.
 - **Documentation:** Lesson 3 in `LEARNING.md`; `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md`; issue and pull request templates; `CODEOWNERS`.
+- **Chat interface (step 3):** a Next.js web UI in `frontend/`. Upload a CSV and see its columns and first rows; ask a question and watch each step of the agent while it happens (its plan, the SQL and Python it runs, the result tables); see the answer with interactive Plotly charts; stop an answer with the Stop button. Light and dark mode, and a layout for phones.
+- **Streaming API:** `POST /ask/stream` sends each step of the agent as a Server-Sent Event while it happens, with a keep-alive ping; the agent stops after its current step when the client disconnects. The stream always ends with an `answer` or `error` event, even when the agent fails unexpectedly. `GET /agent/status` says whether the agent can answer, and why not.
+- **Web UI security:** the browser talks only to the web UI's own server, which passes on just the calls the page needs; that server refuses uploads and questions that another website's page sends through your browser (cross-site request forgery), and host names other than this computer's own unless they are listed in `ALLOWED_HOSTS` (DNS rebinding), on every page and every route but `/api/health`; the API refuses both itself too, wherever it runs (with `make run`, a browser can reach it directly), and in Docker Compose it answers to `api` only because `compose.yaml` adds that name; a Content-Security-Policy with a new nonce for every page, the page-not-found page included, a policy that allows nothing for the API's routes, and headers against framing and content sniffing; every response is checked at run time, text from the agent is never inserted as HTML, and the text of charts is escaped, so a CSV cell can't become a link.
+- **Docker Compose:** `docker compose up --build` (or `make up`) runs the web UI and the API together. Only the web UI is published, on `127.0.0.1`; both containers are read-only, run as ordinary users and have no Linux capabilities. A smoke test checks all of this.
+- **Web UI checks in CI:** Prettier, ESLint with the Power of Ten rules for TypeScript, strict TypeScript, unit and component tests with a 95% coverage gate, a production build, `npm audit` and npm's registry signatures; Playwright browser tests on a desktop and a phone screen, with axe accessibility checks; the Compose smoke test. CodeQL also scans the TypeScript code, Dependabot updates the npm packages and the Node.js image, and pre-commit runs Prettier and ESLint.
+- **Documentation:** Lesson 4 in `LEARNING.md`, and a TypeScript section in `docs/CODING_STANDARD.md`.
 
 ### Changed
 
 - Dependencies are managed with uv, in `backend/pyproject.toml` and `backend/uv.lock`, instead of `requirements.txt` files.
+- The API no longer sends CORS headers, and `CORS_ORIGINS` is gone from `.env.example`. Browsers reach the API only through the web UI's server, so it needs none.
 
 ### Fixed
 
@@ -31,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make_chart` with an empty `y` column name failed with "Internal error in tool make_chart"; it now tells the agent what to fix.
 - A very large tool result was sent to Claude whole. Tool results are now cut at 50,000 characters, with a note that asks the agent to select fewer columns or aggregate.
 - The `.env` file and the CLI's input files were read whole, however large; they are now read with a size limit.
+- A question of only spaces got past the 3-character minimum. Spaces around a question are now removed before it is checked.
 
 ### Security
 

@@ -23,6 +23,11 @@ indent_size = 4
 [*.{yml,yaml,json,sh}]
 indent_size = 2
 
+# The web UI (TypeScript, JavaScript and CSS) indents by 2 spaces, as most
+# web projects do. Prettier reads this file and formats those files.
+[*.{ts,tsx,js,mjs,mts,css,svg}]
+indent_size = 2
+
 # In Markdown, two spaces at the end of a line make a line break, so keep them.
 [*.md]
 trim_trailing_whitespace = false

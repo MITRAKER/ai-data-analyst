@@ -1,0 +1,16 @@
+# Installed packages
+/node_modules/
+
+# What Next.js builds and generates
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Test reports
+/coverage/
+/test-results/
+/playwright-report/
+
+# Local settings: never commit them
+.env*
